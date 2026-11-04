@@ -47,7 +47,7 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     [ -z "$f" ] && continue
     scan_file "$f"
   done < <(git diff --cached --name-only)
-  if git log -p HEAD 2>/dev/null | grep -nE "$HARD" >/dev/null 2>&1; then
+  if git log -p HEAD -- . ':!scripts/pii_audit.sh' 2>/dev/null | grep -nE "$HARD" >/dev/null 2>&1; then
     echo "HIT (hard) in git history"; HITS=1
   fi
 else

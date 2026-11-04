@@ -144,24 +144,6 @@ def _from_dataset(ds, livemap, pass2map, postings_path=None):
     return jobs
 
 
-def _from_portals(portals):
-    jobs = []
-    for c in (portals.get("tracked_companies") or []):
-        if not isinstance(c, dict):
-            continue
-        if c.get("enabled") is False:
-            continue
-        name = c.get("name")
-        if not name:
-            continue
-        careers = c.get("careers_url")
-        api = c.get("api")
-        apply_url = careers or api
-        role = "Software Engineer"
-        jobs.append(_make_job(
-            name, role, careers, apply_url, "custom", "form",
-            "", True, None, "portals"))
-    return jobs
 
 
 def run():
@@ -170,7 +152,7 @@ def run():
     liv_path = base / "liveness.jsonl"
     pass2_path = base / "pass2.jsonl"
     postings_path = base / "postings.jsonl"
-    portals_path = config.career_ops_dir() / "portals.yml"
+
 
     if not ds_path.exists():
         raise RuntimeError("dataset.jsonl not found at " + str(ds_path) + " (dataset dir: " + str(base) + ")")
@@ -202,14 +184,6 @@ def run():
     jobs, dropped = _from_dataset(ds, livemap, pass2map, postings_path)
     print("dropped {} junk postings".format(dropped))
 
-    if portals_path.exists():
-        try:
-            portals = config._parse_yaml(portals_path.read_text())
-            jobs += _from_portals(portals)
-        except Exception as e:
-            print("could not parse portals.yml:", e)
-    else:
-        print("portals.yml not found; skipping")
 
     seen = set()
     out = []
