@@ -1,0 +1,47 @@
+# Scam/spam patterns for job postings. Tuning needs no code change.
+patterns:
+  - id: upfront_fee
+    pattern: "(application fee|processing fee|registration fee|pay .* to apply|pay.*upfront)"
+    description: "Asks candidate to pay to apply"
+  - id: crypto_payment
+    pattern: "(bitcoin|crypto wallet|usdt|ethereum|send .* crypto|wallet address)"
+    description: "Crypto payment request"
+  - id: training_payment
+    pattern: "(pay for training|training fee|course fee|buy our course)"
+    description: "Paid training"
+  - id: pay_for_equipment
+    pattern: "(pay for (your )?equipment|buy (your own )?laptop|purchase equipment|equipment deposit)"
+    description: "Pay for equipment"
+  - id: unpaid_trial
+    pattern: "(unpaid (trial|test|project)|free trial (work|task)|spec work|work for free)"
+    description: "Unpaid trial/spec work"
+  - id: free_webmail_recruiter
+    pattern: "(recruiter|hr|talent).*(gmail\\.com|yahoo\\.com|hotmail\\.com|outlook\\.com|example\\.com)"
+    description: "Free webmail recruiter for corporate role"
+  - id: whatsapp_telegram_only
+    pattern: "(whatsapp only|telegram only|contact (us )?on (whatsapp|telegram)|apply via (whatsapp|telegram))"
+    description: "WhatsApp/Telegram-only process"
+  - id: commission_only
+    pattern: "(commission[- ]only|100% commission|no base salary|pure commission)"
+    description: "Commission-only"
+  - id: mlm
+    pattern: "(multi[- ]level|mlm|downline|recruit (others|your team)|pyramid)"
+    description: "MLM/pyramid"
+  - id: insurance_recruitment
+    pattern: "(insurance (agent|sales|recruit)|sell insurance|life insurance.*(agent|advisor))"
+    description: "Insurance recruitment"
+  - id: data_entry
+    pattern: "(data entry (clerk|operator|job)|copy[- ]paste (data|text)|typing (job|work))"
+    description: "Data-entry pattern"
+  - id: unverifiable_company
+    pattern: "(no website|website (coming soon|under construction))"
+    description: "Unverifiable company"
+  - id: salary_absent_senior
+    pattern: "(senior .* no salary|salary (tbd|to be discussed|negotiable only))"
+    description: "Salary absent for senior role"
+  - id: wire_transfer
+    pattern: "(wire transfer|western union|moneygram)"
+    description: "Wire transfer request"
+  - id: bank_details
+    pattern: "(bank account (number|details)|send your (bank|account))"
+    description: "Bank details request"
