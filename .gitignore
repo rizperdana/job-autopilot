@@ -1,0 +1,18 @@
+# job-autopilot
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+liveness.log
+pass2.log
+state.json
+jobs.jsonl
+shortlist.json
+runs/
+*.db
+*.pdf
+vendor/
+config/*.real.yml
+# .pii-allowlist is a local override list for the audit; keep it private
+.pii-allowlist
+MD

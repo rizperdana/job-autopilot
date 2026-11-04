@@ -1,0 +1,12 @@
+policy:
+  allow_automated_submit: false
+  max_drafts_per_day: 10
+  max_submissions_per_day: 0
+gates:
+  apply_threshold: 60
+  review_threshold: 45
+paths:
+  career_ops: ~/career-ops
+  runtime: ~/.job-autopilot
+  dataset: ~/.job-autopilot/datasets
+# Candidate facts come from ~/career-ops/cv.md + config/profile.yml at runtime.
