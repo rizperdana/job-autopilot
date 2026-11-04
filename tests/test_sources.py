@@ -158,6 +158,10 @@ class TestSources(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             sources.run()
 
+    def test_no_portal_synthesis(self):
+        self.assertFalse(hasattr(sources, "_from_portals"))
+        jobs = sources.run()
+        self.assertTrue(all(j.get("source") != "portals" for j in jobs))
 
 if __name__ == "__main__":
     unittest.main()
