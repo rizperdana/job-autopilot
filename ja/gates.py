@@ -82,6 +82,46 @@ def _blacklist():
     return out
 
 
+import re as _re_g8
+
+_DEV_SIGNALS = _re_g8.compile(
+    r'\b(software|engineer|developer|programmer|swe|fullstack|full-stack|'
+    r'backend|back-end|frontend|front-end|devops|sre|platform|infrastructure|'
+    r'qa|test automation|data engineer|machine learning|ml engineer|'
+    r'applied scientist|research engineer|tech lead|technical lead)\b',
+    _re_g8.IGNORECASE)
+
+_NON_DEV_SIGNALS = _re_g8.compile(
+    r'\b(accountant|accounting|financial|finance|bookkeeper|'
+    r'marketing|growth|paid social|seo|brand|content|copywriter|'
+    r'sales|account executive|account manager|business development|'
+    r'customer success|customer support|support specialist|'
+    r'recruiter|recruiting|talent acquisition|'
+    r'legal|counsel|compliance|paralegal|'
+    r'product manager|program manager|project manager|'
+    r'designer|design|ux|ui designer|illustrator|'
+    r'technician|coordinator|specialist|analyst|administrator|'
+    r'operations manager|office manager|executive assistant)\b',
+    _re_g8.IGNORECASE)
+
+
+def _role_family_gate(role):
+    """G8: software development roles only. Returns (status, reason)."""
+    t = (role or '').strip()
+    if not t:
+        return 'fail', 'empty role title'
+    dev = bool(_DEV_SIGNALS.search(t))
+    non_dev = bool(_NON_DEV_SIGNALS.search(t))
+    if dev and not non_dev:
+        return 'pass', 'software development role'
+    if dev and non_dev:
+        # e.g. 'Software Engineer, Marketing Platform' -> dev signal wins on a dev title
+        return 'pass', 'software development role (mixed signals: kept on dev title)'
+    if non_dev:
+        return 'fail', 'non-software role family'
+    return 'fail', 'no software development signal in title'
+
+
 def hard_gates(job):
     res = []
     company = job.get("company")
@@ -279,6 +319,10 @@ def hard_gates(job):
     else:
         g7_reasons.append("no scam patterns")
     res.append(("G7", g7_status, "; ".join(g7_reasons)))
+
+    # G8 role family: software development only (user directive 2026-11-17)
+    g8_status, g8_reason = _role_family_gate(job.get("role") or "")
+    res.append(("G8", g8_status, g8_reason))
 
     return res
 

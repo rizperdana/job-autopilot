@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from ja import config, loop
+from ja import config, gates, loop
 
 
 def _write_dataset_fixture(base):
@@ -41,11 +41,13 @@ def _write_dataset_fixture(base):
         "source": "test"}) + "\n")
 
 
-def _job(job_id="j1", company="Acme", role="Engineer", channel="email"):
+def _job(job_id="j1", company="Acme", role="Engineer", channel="email",
+         email="careers@acme.example"):
     return {"job_id": job_id, "company": company, "role": role, "channel": channel,
             "url": "https://x.example", "apply_url": "https://x.example/apply",
             "ats": "greenhouse", "source": "test", "location_text": "",
-            "worldwide_ok": True, "posted_at": None, "dedupe_hash": "h" + job_id}
+            "worldwide_ok": True, "posted_at": None, "dedupe_hash": "h" + job_id,
+            "email": email}
 
 
 class Base(unittest.TestCase):
@@ -75,7 +77,8 @@ class Base(unittest.TestCase):
 
     def test_n_plus_1th_draft_refused(self):
         cfg = {"policy": {"max_drafts_per_day": 2, "max_submissions_per_day": 0}}
-        with mock.patch("ja.channels.email.create_email_draft", return_value="mock-draft-id"), \
+        with mock.patch("ja.channels.email.create_email_draft",
+                        return_value={"draft_id": "mock-draft-id"}), \
              mock.patch.object(config, "get", lambda p, d=None: _get(cfg, p, d)), \
              mock.patch.object(loop, "already_drafted", lambda jid: None):
             r1 = loop.route_job(_job("a"), dry=False, drafts_today=0,
@@ -108,6 +111,28 @@ class TestIdempotency(Base):
                 self.assertEqual(a, "skip")
                 self.assertIn("already", why)
                 m.assert_not_called()
+
+    def test_email_skip_no_address(self):
+        with mock.patch("ja.channels.email.create_email_draft") as m:
+            a, why = loop.route_job(_job(email=None), dry=False, drafts_today=0,
+                                    profile={}, max_drafts=10)
+            self.assertEqual(a, "skip")
+            self.assertEqual(why, "no apply address")
+            m.assert_not_called()
+
+    def test_email_uses_job_address_and_subject(self):
+        with mock.patch("ja.channels.email.create_email_draft",
+                        return_value={"draft_id": "mid-1"}) as m:
+            job = _job()
+            job["email"] = "careers@acme.example"
+            a, why = loop.route_job(job, dry=False, drafts_today=0,
+                                    profile={"candidate": {"full_name": "Alex Doe"}},
+                                    max_drafts=10)
+            self.assertEqual(a, "drafted")
+            m.assert_called_once()
+            self.assertEqual(m.call_args.kwargs["to"], ["careers@acme.example"])
+            self.assertEqual(m.call_args.kwargs["subject"],
+                             "Application: Engineer — Alex Doe")
 
 
 class TestSubmitGuard(Base):
@@ -172,5 +197,97 @@ def _get(cfg, path, default=None):
     return cur
 
 
+class TestReviewNotRouted(Base):
+    def _run_live(self, jobs, eval_fn):
+        """Live-path run with jobs.jsonl seeded like discover does + patched gates."""
+        rt = config.runtime_dir()
+        rt.mkdir(parents=True, exist_ok=True)
+        (rt / "jobs.jsonl").write_text(
+            "".join(json.dumps(j) + "\n" for j in jobs))
+        fake = {"submitted": False, "needs_human": [], "artifacts": {}}
+        with mock.patch("ja.sources.run", return_value=jobs), \
+             mock.patch.object(gates, "evaluate", side_effect=eval_fn), \
+             mock.patch("ja.channels.form.prepare_application",
+                        return_value=fake) as m, \
+             mock.patch("ja.channels.email.create_email_draft") as em:
+            actions = loop.run(limit=5, dry=False)
+        return actions, m, em
+
+    def test_run_routes_only_apply_skips_review(self):
+        """Regression: review-decision jobs must never be routed/prefilled."""
+        apply_job = _job("japply", channel="form")
+        review_job = _job("jreview", company="Instructure", channel="form")
+        eval_fn = mock.Mock(side_effect=lambda job: {
+            "decision": "review" if job["job_id"] == "jreview" else "apply",
+            "score": 70, "breakdown": {}, "reasons": []})
+        actions, m, em = self._run_live([apply_job, review_job], eval_fn)
+        self.assertEqual(actions, [("Acme", "prefilled", mock.ANY),
+                                   ("Instructure", "skip_review",
+                                    "awaiting candidate decision")])
+        m.assert_called_once()
+        em.assert_not_called()
+        rows = self.tracker._connect().execute(
+            "SELECT COUNT(*) FROM applications WHERE job_id='jreview' "
+            "AND status IN ('prefilled','drafted')").fetchone()[0]
+        self.assertEqual(rows, 0)
+
+    def test_route_job_skips_review_decision(self):
+        fake = {"submitted": False, "needs_human": [], "artifacts": {}}
+        with mock.patch("ja.channels.form.prepare_application",
+                        return_value=fake) as m:
+            action, why = loop.route_job(_job("j1", channel="form"), dry=False,
+                                         drafts_today=0, profile={},
+                                         max_drafts=10, decision="review")
+        self.assertEqual(action, "skip_review")
+        self.assertEqual(why, "awaiting candidate decision")
+        m.assert_not_called()
+
+    def test_review_skips_do_not_count_toward_limit(self):
+        """Review skips never consume the limit budget."""
+        jobs = [_job("jreview", company="Instructure", channel="form"),
+                _job("japply", company="Zed", channel="form")]
+        eval_fn = mock.Mock(side_effect=lambda job: {
+            "decision": "review" if job["job_id"] == "jreview" else "apply",
+            "score": 70, "breakdown": {}, "reasons": []})
+        actions, m, em = self._run_live(jobs, eval_fn)
+        routed = [a for a in actions if a[1] != "skip_review"]
+        self.assertEqual(len(routed), 1)
+        self.assertEqual(actions[0][1], "skip_review")
+        self.assertEqual(actions[1][0], "Zed")
+        m.assert_called_once()
+
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEmailBodyBuilder(Base):
+    def test_builder_warm_8years_role_aware(self):
+        from ja.email_body import build_email_body
+        prof = {"candidate": {"full_name": "Alex Doe", "email": "e@x.com",
+                              "phone": "+00 000", "linkedin": "li/x", "portfolio_url": "p/x"},
+                "narrative": {"headline": "Fullstack engineer who ships LLM features into production",
+                              "proof_points": [{"name": "SourceSage scale",
+                                                "hero_metric": "APIs serving millions of daily B2B requests"}]}}
+        body = build_email_body({"role": "Senior Software Engineer", "company": "Nuna Inc",
+                                 "department": "Data", "apply_url": "u"}, prof,
+                                cv_filename="Example_Candidate_CV.pdf")
+        self.assertIn("8 years", body)
+        self.assertIn("Dear Nuna Inc Hiring Team", body)
+        self.assertIn("millions of daily B2B requests", body)  # proof point quoted, not invented
+        self.assertIn("Example_Candidate_CV.pdf", body)
+        # cover-letter contract: brief (<= 160 words) and application-shaped
+        self.assertLessEqual(len(body.split()), 160)
+        self.assertIn("apply", body.lower())
+        self.assertTrue(body.rstrip().endswith("p/x"))  # contact block is the last line
+
+    def test_builder_ai_keyword_word_boundary(self):
+        from ja.email_body import build_email_body
+        prof = {"candidate": {"full_name": "R P"}, "narrative": {}}
+        # 'paid' must NOT trigger the 'ai' emphasis (word-boundary match)
+        body = build_email_body({"role": "Head of Paid Social, Insurance",
+                                 "company": "LP"}, prof)
+        # fallback emphasis (no dev keyword) + no false LLM emphasis from 'paid'
+        self.assertIn("building software that stays simple", body)
+        self.assertNotIn("LLM features have to work in production", body)

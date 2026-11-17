@@ -299,3 +299,26 @@ class TestAggregatorFilter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestRoleFamilyGate(unittest.TestCase):
+    def test_software_roles_pass(self):
+        from ja.gates import _role_family_gate as g
+        for r in ("Senior Software Engineer", "DevOps Engineer",
+                  "Sr. Engineer, Database Reliability",
+                  "Talent Pool - Fullstack Developer"):
+            status, _ = g(r)
+            self.assertEqual(status, "pass", r)
+
+    def test_non_software_roles_fail(self):
+        from ja.gates import _role_family_gate as g
+        for r in ("Staff Accountant", "Marketing Performance Manager",
+                  "Field Service Technician", "Customer Success Manager",
+                  "Sr. Product Marketing Manager"):
+            status, reason = g(r)
+            self.assertEqual(status, "fail", r)
+
+    def test_word_boundary_no_substring_false_positive(self):
+        from ja.gates import _role_family_gate as g
+        # 'design' inside 'Database Reliability Engineer' must not fire
+        status, _ = g("Sr. Engineer, Database Reliability")
+        self.assertEqual(status, "pass")

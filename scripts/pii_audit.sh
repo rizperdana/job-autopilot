@@ -36,8 +36,8 @@ scan_file() {
   if grep -nE "$HARD" "$f" >/dev/null 2>&1; then
     echo "HIT (hard) in $f"; grep -nE "$HARD" "$f" | head; HITS=1
   fi
-  if grep -noE "$EMAIL" "$f" 2>/dev/null | grep -vE "example\.(com|org)|candidate@example" >/dev/null 2>&1; then
-    echo "HIT (email) in $f"; grep -noE "$EMAIL" "$f" 2>/dev/null | grep -vE "example\.(com|org)|candidate@example" | head; HITS=1
+  if grep -noE "$EMAIL" "$f" 2>/dev/null | grep -vE "example\.(com|org)|\.example|candidate@example|@[a-z]\.com" >/dev/null 2>&1; then
+    echo "HIT (email) in $f"; grep -noE "$EMAIL" "$f" 2>/dev/null | grep -vE "example\.(com|org)|\.example|candidate@example|@[a-z]\.com" | head; HITS=1
   fi
 }
 

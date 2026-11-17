@@ -137,9 +137,11 @@ def _from_dataset(ds, livemap, pass2map, postings_path=None):
             loc_text = po.get("location") or po.get("location_text") or ""
             url = po.get("url") or po.get("apply_url") or careers
             apply_url = po.get("apply_url") or po.get("url") or careers
-            jobs.append(_make_job(
+            job = _make_job(
                 name, title, url, apply_url, ats, channel, loc_text,
-                worldwide_ok, None, "remoteintech", raw_extra))
+                worldwide_ok, None, "remoteintech", raw_extra)
+            job["email"] = email_addresses[0] if email_addresses else None
+            jobs.append(job)
     return jobs, dropped
     return jobs
 

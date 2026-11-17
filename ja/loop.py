@@ -62,12 +62,17 @@ def _record_intent(kind, job_id, detail):
     tracker.record_event(kind, job_id=job_id, detail=detail)
 
 
-def route_job(job, *, dry, drafts_today, profile, max_drafts, confirm_submit=False):
+def route_job(job, *, dry, drafts_today, profile, max_drafts, confirm_submit=False,
+              decision="apply"):
     """Route one shortlisted job. Returns (action, reason). Never sends/submits."""
     job_id = job.get("job_id") or job.get("id")
     company = job.get("company", "?")
     role = job.get("role", "?")
     channel = (job.get("channel") or "form").lower()
+
+    if decision != "apply":
+        print("  skip — review (awaiting candidate decision): %s | %s" % (company, role))
+        return ("skip_review", "awaiting candidate decision")
 
     done = already_drafted(job_id)
     if done:
@@ -84,19 +89,43 @@ def route_job(job, *, dry, drafts_today, profile, max_drafts, confirm_submit=Fal
                                          "role": role, "dry_run": True})
             return ("would_draft", "dry-run")
         # record BEFORE the irreversible call
+        to_addr = job.get("email")
+        if not to_addr:
+            return ("skip", "no apply address")
         _record_intent("draft_intent", job_id, {"channel": "email",
                                                 "company": company, "role": role,
-                                                "inputs": {"subject": "[%s] %s" % (company, role)}})
+                                                "inputs": {"subject": "Application: %s — %s"
+                                                           % (role, (profile.get("candidate", {}).get("full_name") or "").strip())}})
         from .channels import email as em
+        from .channels.form import _resolve_cv
+        from .email_body import build_email_body
+        try:
+            cv_file = _resolve_cv()
+        except FileNotFoundError:
+            cv_file = None  # ponytail: email drafts work CV-less; add --attach override when needed
+        body = build_email_body(job, profile, cv_filename=cv_file.name if cv_file else None)
         res = em.create_email_draft(
-            to=[config.get("email.to") or "candidate@example.com"],
-            subject="[job-autopilot] %s — %s" % (company, role),
-            body="Application draft for %s (%s).\nPosting: %s\n"
-                 % (role, company, job.get("apply_url") or job.get("url")),
+            to=[to_addr],
+            subject="Application: %s — %s" % (role, (profile.get("candidate", {}).get("full_name") or "").strip()),
+            body=body,
+            attachments=[str(cv_file)] if cv_file else None,
             verify=True)
-        tracker.record_event("draft_created", job_id=job_id,
-                             detail={"channel": "email", "gmail_draft_id": str(res)[:120]})
-        return ("drafted", "gmail draft created")
+        aid = tracker.create_application(job_id, channel="email", status="drafted")
+        # persist gmail draft id onto the application row
+        conn = tracker._connect()
+        try:
+            conn.execute("UPDATE applications SET draft_id=? WHERE application_id=?",
+                         (str(res.get("draft_id")), aid))
+            conn.commit()
+        finally:
+            conn.close()
+        tracker.record_event("draft_created", job_id=job_id, application_id=aid,
+                             detail={"channel": "email",
+                                     "gmail_draft_id": str(res.get("draft_id")),
+                                     "to": res.get("to"),
+                                     "subject": res.get("subject"),
+                                     "attachments": res.get("attachments")})
+        return ("drafted", "gmail draft created (id=%s)" % res.get("draft_id"))
     # form channel: prefill + handoff (no auto-submit by default)
     if dry:
         print("  WOULD prefill form + handoff (no submit): %s | %s | %s"
@@ -184,8 +213,8 @@ def run(limit=5, dry=True, confirm_submit=False):
             break
         action, why = route_job(j, dry=dry, drafts_today=drafts_today,
                                 profile=profile, max_drafts=max_drafts,
-                                confirm_submit=confirm_submit)
-
+                                confirm_submit=confirm_submit,
+                                decision=j.get("decision"))
         actions.append((j.get("company"), action, why))
         print("route: %-28s %-14s %s" % (j.get("company", "?"), action, why))
         if action in ("drafted", "prefilled", "would_draft", "would_prefill"):

@@ -73,6 +73,16 @@ def _profile_facts(profile):
     c = (profile.get("candidate") or {}) if isinstance(profile, dict) else {}
     comp = profile.get("compensation") or {}
     loc = profile.get("location") or {}
+    cv = config.cv_text() or ""
+    # verbatim facts only: read them out of cv.md, never invent
+    years = None
+    m = re.search(r"with\s+(\d{1,2})\s+years", cv, re.IGNORECASE)
+    if m:
+        years = m.group(1)
+    current_company = None
+    m = re.search(r"###\s+([^\n\-]+?)\s+--[^\n]*\n+[^\n]*\n(?:[^\n]*\n)*?([^\n]*Present)", cv)
+    if m:
+        current_company = m.group(1).strip()
     return {
         "full_name": c.get("full_name"),
         "email": c.get("email"),
@@ -81,8 +91,8 @@ def _profile_facts(profile):
         "linkedin": c.get("linkedin"),
         "github": c.get("github"),
         "portfolio": c.get("portfolio_url"),
-        "current_company": None,
-        "years_experience": None,  # never invent; only set if a verbatim fact exists
+        "current_company": current_company,
+        "years_experience": years,
         "work_authorized": "Indonesia" if (loc.get("country") == "Indonesia") else None,
         "needs_sponsorship": (profile.get("location") or {}).get("needs_sponsorship"),
         "salary": comp.get("target_range") or comp.get("minimum"),
@@ -475,6 +485,11 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
             result["actions"].append({"action": "submit_blocked", "reason": "allow_submit=%s confirm_submit=%s" % (allow_submit, confirm_submit)})
             result["ready_to_submit"] = bool(allow_submit)
 
+        # collapse per-option noise: radio/checkbox groups repeat one field key per option
+        _seen = {}
+        for _nh in result["needs_human"]:
+            _seen.setdefault(_nh.get("field"), _nh)
+        result["needs_human"] = list(_seen.values())
         log("done", needs_human=len(result["needs_human"]))
     finally:
         B.close(pw, ctx)

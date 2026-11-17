@@ -118,7 +118,16 @@ def _parse_yaml(text):
             rest = rest.strip()
             idx += 1
             if rest:
-                d[key] = parse_scalar(rest)
+                if rest in (">", ">-", ">+", "|", "|-", "|+"):
+                    # block scalar: consume every following line more indented than the key
+                    block = []
+                    while idx < len(lines) and lines[idx][0] > indent:
+                        block.append(lines[idx][1])
+                        idx += 1
+                    joiner = " " if rest.startswith(">") else "\n"
+                    d[key] = joiner.join(block)
+                else:
+                    d[key] = parse_scalar(rest)
             else:
                 if idx < len(lines) and lines[idx][0] > indent:
                     v, idx = parse_block(idx, lines[idx][0])

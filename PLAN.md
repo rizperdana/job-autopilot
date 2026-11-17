@@ -10,7 +10,7 @@ Non-goals: no fabricated experience, no fake accounts, no bulk spam, no scraping
 
 Single source of truth: `~/career-ops/config/profile.yml` + `~/career-ops/cv.md` (never duplicated into the repo — the repo references this file by path).
 
-Senior Software Engineer / Fullstack / ML Engineer; a Southeast Asia timezone (UTC+7); 6+ years Python, Ruby, JavaScript, PHP, SQL; REST APIs, microservices, MySQL/PostgreSQL/Elasticsearch, Celery, Docker, CI/CD, AWS; LLM/RAG integration; side projects Semgrepll, Wikwok, RealityCheck. Target $50K–90K (min $40K). Eligibility rule: fully-remote worldwide ONLY, or onsite/hybrid in a developed country with explicit relocation + visa sponsorship. Requires sponsorship abroad. English professional, Indonesian native. Output language: en.
+Senior Software Engineer / Fullstack / ML Engineer; a Southeast Asia timezone (UTC+7); 8 years Python, Ruby, JavaScript, PHP, SQL; REST APIs, microservices, MySQL/PostgreSQL/Elasticsearch, Celery, Docker, CI/CD, AWS; LLM/RAG integration; side projects Semgrepll, Wikwok, RealityCheck. Target $50K–90K (min $40K). Eligibility rule: fully-remote worldwide ONLY, or onsite/hybrid in a developed country with explicit relocation + visa sponsorship. Requires sponsorship abroad. English professional, Indonesian native. Output language: en.
 
 ## 3. Data sources
 

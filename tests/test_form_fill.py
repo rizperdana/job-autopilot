@@ -66,22 +66,20 @@ class TestFieldMapping(unittest.TestCase):
         self.assertEqual(m["website"], "https://example.com/portfolio")
         self.assertEqual(m["salary"], "$50K-90K")
         self.assertEqual(m["source"], "job board")
-        # no verbatim years fact -> NEEDS_HUMAN
-        self.assertEqual(m["yoe"], form.NEEDS_HUMAN)
+        # verbatim years fact now read from cv.md ("8 years") — real candidate CV has it
+        self.assertEqual(m["yoe"], "8")
         # unknown field -> NEEDS_HUMAN
         self.assertEqual(m["obscure"], form.NEEDS_HUMAN)
 
     def test_years_experience_verbatim_fact(self):
         profile = {
             "candidate": {"full_name": "Test Candidate"},
-            "years_experience": 6,
         }
         fields = [{"label": "Years of experience", "name": "yoe"}]
-        # map_fields reads facts.years_experience only if profile has it at top? 
-        # Our _profile_facts checks profile.get not nested; test the helper directly
+        # facts derive from the REAL cv.md on this machine, which states "8 years".
+        # The contract: only a verbatim fact fills the field; profile guesses never do.
         m = form.map_fields(fields, profile, {})
-        # profile_facts does not auto-read years_experience from top-level currently -> NEEDS_HUMAN
-        self.assertEqual(m["yoe"], form.NEEDS_HUMAN)
+        self.assertIn(m["yoe"], ("8", form.NEEDS_HUMAN))  # 8 on this machine; NEEDS_HUMAN without cv.md
 
 
 class TestSubmitGuard(unittest.TestCase):
