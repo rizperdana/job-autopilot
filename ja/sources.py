@@ -225,6 +225,7 @@ def run():
     jg = _from_jobgether(pages=2)
     if jg:
         print("jobgether: +%d remote-worldwide software postings" % len(jg))
+        jobs = jobs + jg
     else:
         print("jobgether: 0 (unreachable or empty; remoteintech dataset still used)")
     seen = set()
