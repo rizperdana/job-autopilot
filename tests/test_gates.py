@@ -287,6 +287,7 @@ class TestAggregatorFilter(unittest.TestCase):
             "department": "Eng", "updated_at": "2026-11-04", "source": "api"}) + "\n")
         orig = config.dataset_path
         config.dataset_path = lambda: base
+        sources._from_jobgether = lambda *a, **k: []  # keep test offline
         try:
             jobs = sources.run()
             raw = jobs[0]["raw"]

@@ -43,6 +43,8 @@ class TestSources(unittest.TestCase):
         config.dataset_path = lambda: base
         rt = Path(self.tmp) / "runtime"
         config.runtime_dir = lambda: rt
+        # keep unit tests offline: no live Jobgether calls
+        sources._from_jobgether = lambda *a, **k: []
         # career_ops dir
         co = Path(self.tmp) / "career-ops"
         co.mkdir()

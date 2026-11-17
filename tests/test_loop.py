@@ -273,13 +273,15 @@ class TestEmailBodyBuilder(Base):
         body = build_email_body({"role": "Senior Software Engineer", "company": "Nuna Inc",
                                  "department": "Data", "apply_url": "u"}, prof,
                                 cv_filename="Example_Candidate_CV.pdf")
+        # humanized contract: no "Dear ... Hiring Team", no bullet lists,
+        # no CV filename quoted, brief (<= 130 words), CV mentioned as attached
         self.assertIn("8 years", body)
-        self.assertIn("Dear Nuna Inc Hiring Team", body)
-        self.assertIn("millions of daily B2B requests", body)  # proof point quoted, not invented
-        self.assertIn("Example_Candidate_CV.pdf", body)
-        # cover-letter contract: brief (<= 160 words) and application-shaped
-        self.assertLessEqual(len(body.split()), 160)
-        self.assertIn("apply", body.lower())
+        self.assertIn("Hi Nuna Inc team", body)
+        self.assertNotIn("Dear", body)
+        self.assertNotIn("Example_Candidate_CV.pdf", body)
+        self.assertIn("My CV is attached", body)
+        self.assertNotIn("- ", body)
+        self.assertLessEqual(len(body.split()), 130)
         self.assertTrue(body.rstrip().endswith("p/x"))  # contact block is the last line
 
     def test_builder_ai_keyword_word_boundary(self):
