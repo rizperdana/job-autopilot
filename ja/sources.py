@@ -6,6 +6,10 @@ import os
 from . import config
 
 
+import time
+import urllib.request
+
+
 def _norm_role(role):
     return " ".join((role or "").lower().split())
 
@@ -145,7 +149,40 @@ def _from_dataset(ds, livemap, pass2map, postings_path=None):
     return jobs, dropped
     return jobs
 
-
+def _from_jobgether(pages=2, keyword="software engineer"):
+    """Jobgether public agent API (documented at /astroapi/ai/jobs/docs).
+    Returns remote-worldwide software jobs. Failure = empty list, caller decides."""
+    jobs = []
+    for page in range(1, pages + 1):
+        url = ("https://jobgether.com/astroapi/ai/jobs.json"
+               "?keyword=%s&locations=anywhere&limit=25&page=%d"
+               % (urllib.request.quote(keyword), page))
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "job-autopilot/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:  # network hiccup: skip page, keep the rest
+            print("jobgether page %d failed: %s" % (page, e))
+            break
+        rows = data.get("jobs") or []
+        if not rows:
+            break
+        for row in rows:
+            title = (row.get("title") or "").strip()
+            company = (row.get("company") or "").strip()
+            offer = (row.get("url") or "").strip()
+            if not (title and company and offer):
+                continue
+            if "jobgether.com" not in offer:
+                continue
+            loc = (row.get("location") or "").strip() or "Anywhere"
+            jobs.append(_make_job(
+                company, title, offer, offer, "jobgether", "form", loc,
+                True, (row.get("postedAt") or "").strip() or None, "jobgether"))
+        if len(rows) < 25:
+            break
+        time.sleep(2)  # ponytail: fixed 2s delay, adaptive backoff if Jobgether ever rate-limits us
+    return jobs
 
 
 def run():
@@ -185,8 +222,11 @@ def run():
 
     jobs, dropped = _from_dataset(ds, livemap, pass2map, postings_path)
     print("dropped {} junk postings".format(dropped))
-
-
+    jg = _from_jobgether(pages=2)
+    if jg:
+        print("jobgether: +%d remote-worldwide software postings" % len(jg))
+    else:
+        print("jobgether: 0 (unreachable or empty; remoteintech dataset still used)")
     seen = set()
     out = []
     for j in jobs:
