@@ -80,7 +80,7 @@ class Base(unittest.TestCase):
         with mock.patch("ja.channels.email.create_email_draft",
                         return_value={"draft_id": "mock-draft-id"}), \
              mock.patch.object(config, "get", lambda p, d=None: _get(cfg, p, d)), \
-             mock.patch.object(loop, "already_drafted", lambda jid: None):
+             mock.patch.object(loop, "already_drafted", lambda jid, channel=None: None):
             r1 = loop.route_job(_job("a"), dry=False, drafts_today=0,
                                 profile={}, max_drafts=2)
             self.assertEqual(r1[0], "drafted")
@@ -104,13 +104,38 @@ class TestDryRun(Base):
 
 class TestIdempotency(Base):
     def test_already_drafted_skipped(self):
-        with mock.patch.object(loop, "already_drafted", lambda jid: "drafted"):
+        with mock.patch.object(loop, "already_drafted", lambda jid, channel=None: "drafted"):
             with mock.patch("ja.channels.email.create_email_draft") as m:
                 a, why = loop.route_job(_job(), dry=False, drafts_today=0,
                                         profile={}, max_drafts=10)
                 self.assertEqual(a, "skip")
                 self.assertIn("already", why)
                 m.assert_not_called()
+
+    def test_channel_aware_idempotency(self):
+        """Email row must not block form channel; form row must block form."""
+        self.tracker.upsert_job({"job_id": "j1", "company": "Acme", "role": "Engineer",
+                                "url": "https://x.example", "apply_url": "https://x.example/apply",
+                                "ats": "greenhouse", "channel": "email", "source": "test",
+                                "location_text": "", "worldwide_ok": True, "posted_at": None,
+                                "gate_decision": "apply", "gate_score": 70,
+                                "gate_reasons": [], "dedupe_hash": "hj1"})
+        # submitted/email row must NOT block the same job on form channel
+        self.tracker.create_application("j1", channel="email", status="drafted")
+        fake = {"submitted": False, "needs_human": [], "artifacts": {}}
+        with mock.patch("ja.channels.form.prepare_application", return_value=fake) as m:
+            a, why = loop.route_job(_job("j1", channel="form"), dry=False,
+                                    drafts_today=0, profile={}, max_drafts=10)
+            self.assertEqual(a, "prefilled")
+            m.assert_called_once()
+        # prefilled/form row DOES block form channel
+        self.tracker.create_application("j1", channel="form", status="prefilled")
+        with mock.patch("ja.channels.form.prepare_application", return_value=fake) as m:
+            a, why = loop.route_job(_job("j1", channel="form"), dry=False,
+                                    drafts_today=0, profile={}, max_drafts=10)
+            self.assertEqual(a, "skip")
+            self.assertIn("already", why)
+            m.assert_not_called()
 
     def test_email_skip_no_address(self):
         with mock.patch("ja.channels.email.create_email_draft") as m:
