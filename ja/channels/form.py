@@ -50,21 +50,29 @@ def _blacklisted(company):
         return False
     return company.strip().lower() in text
 
-def _duplicate(company, role):
+def _duplicate(company, role, channel="form"):
+    """True only if this company+role was already applied to on the SAME channel.
+
+    A row that merely exists in `applications` is NOT a duplicate: discover/gate
+    create rows for every posting (status discovered/gated/shortlisted). Only
+    drafted/prefilled/submitted mean we already went out the door — and even then
+    only on the same channel (a company may invite a web apply after an email).
+    """
     try:
-        conn = None
         import sqlite3
         db = tracker.db_path()
         if not db.exists():
             return False
         conn = sqlite3.connect(str(db))
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT j.job_id FROM jobs j JOIN applications a ON a.job_id=j.job_id "
-            "WHERE lower(j.company)=? AND lower(j.role)=? LIMIT 1",
-            (company.strip().lower(), role.strip().lower()),
-        ).fetchone()
-        conn.close()
+        try:
+            row = conn.execute(
+                "SELECT j.job_id FROM jobs j JOIN applications a ON a.job_id=j.job_id "
+                "WHERE lower(j.company)=? AND lower(j.role)=? AND lower(a.channel)=? "
+                "AND a.status IN ('drafted','prefilled','submitted') LIMIT 1",
+                (company.strip().lower(), role.strip().lower(), channel.strip().lower()),
+            ).fetchone()
+        finally:
+            conn.close()
         return row is not None
     except Exception:
         return False

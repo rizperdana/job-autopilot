@@ -44,14 +44,24 @@ def caps_used():
         conn.close()
 
 
-def already_drafted(job_id):
-    """Idempotency: has this job already been drafted/handed off?"""
+def already_drafted(job_id, channel=None):
+    """Idempotency: has this job already been drafted/handed off on THIS channel?
+
+    A job can legitimately be applied to on two channels (e.g. email sent, then the
+    company replies 'please use our web form'). Cross-channel rows must not block.
+    """
     conn = tracker._connect()
     try:
-        row = conn.execute(
-            "SELECT status FROM applications WHERE job_id=? "
-            "AND status IN ('drafted','prefilled','submitted_auto','submitted_human')",
-            (job_id,)).fetchone()
+        if channel:
+            row = conn.execute(
+                "SELECT status FROM applications WHERE job_id=? AND channel=? "
+                "AND status IN ('drafted','prefilled','submitted_auto','submitted_human')",
+                (job_id, channel)).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT status FROM applications WHERE job_id=? "
+                "AND status IN ('drafted','prefilled','submitted_auto','submitted_human')",
+                (job_id,)).fetchone()
         return row[0] if row else None
     finally:
         conn.close()
@@ -74,9 +84,9 @@ def route_job(job, *, dry, drafts_today, profile, max_drafts, confirm_submit=Fal
         print("  skip — review (awaiting candidate decision): %s | %s" % (company, role))
         return ("skip_review", "awaiting candidate decision")
 
-    done = already_drafted(job_id)
+    done = already_drafted(job_id, channel=channel)
     if done:
-        return ("skip", "already %s (idempotent)" % done)
+        return ("skip", "already %s on %s (idempotent)" % (done, channel))
     if drafts_today >= max_drafts:
         return ("skip", "cap reached: max_drafts_per_day=%d" % max_drafts)
 
