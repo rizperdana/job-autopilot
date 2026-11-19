@@ -163,9 +163,9 @@ class TestProfileLoading(unittest.TestCase):
         text = (
             "# header comment\n"
             "candidate:\n"
-            "  full_name: \"Example Candidate\"  # inline comment\n"
+            "  full_name: \"Jane Doe\"  # inline comment\n"
             "  email: \"a@b.co\"\n"
-            "  phone: '+1 555 0100'\n"
+            "  phone: '+00 000'\n"
             "narrative:\n"
             "  exit_story: >-\n"
             "    line one\n"
@@ -180,9 +180,9 @@ class TestProfileLoading(unittest.TestCase):
             "      fit: primary\n"
         )
         d = _parse_yaml(text)
-        self.assertEqual(d["candidate"]["full_name"], "Example Candidate")
+        self.assertEqual(d["candidate"]["full_name"], "Jane Doe")
         self.assertEqual(d["candidate"]["email"], "a@b.co")
-        self.assertEqual(d["candidate"]["phone"], "+1 555 0100")
+        self.assertEqual(d["candidate"]["phone"], "+00 000")
         self.assertEqual(d["narrative"]["exit_story"], "line one line two")
         self.assertEqual(d["target_roles"]["primary"], ["Senior Software Engineer", "Fullstack Engineer"])
         self.assertEqual(d["target_roles"]["archetypes"][0]["level"], "Senior")
