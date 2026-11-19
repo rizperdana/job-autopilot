@@ -164,7 +164,7 @@ class TestProfileLoading(unittest.TestCase):
             "# header comment\n"
             "candidate:\n"
             "  full_name: \"Jane Doe\"  # inline comment\n"
-            "  email: \"a@b.co\"\n"
+            "  email: \"a@b.example\"\n"
             "  phone: '+00 000'\n"
             "narrative:\n"
             "  exit_story: >-\n"
@@ -181,7 +181,7 @@ class TestProfileLoading(unittest.TestCase):
         )
         d = _parse_yaml(text)
         self.assertEqual(d["candidate"]["full_name"], "Jane Doe")
-        self.assertEqual(d["candidate"]["email"], "a@b.co")
+        self.assertEqual(d["candidate"]["email"], "a@b.example")
         self.assertEqual(d["candidate"]["phone"], "+00 000")
         self.assertEqual(d["narrative"]["exit_story"], "line one line two")
         self.assertEqual(d["target_roles"]["primary"], ["Senior Software Engineer", "Fullstack Engineer"])
@@ -191,7 +191,7 @@ class TestProfileLoading(unittest.TestCase):
         # _load_yaml_file must prefer PyYAML (handles everything) and fall back cleanly
         from ja import config as cfg
         import tempfile, os
-        text = "candidate:\n  full_name: \"A B\"\n  email: \"x@y.zz\"\nnarrative:\n  s: >-\n    p q\n"
+        text = "candidate:\n  full_name: \"A B\"\n  email: \"u@v.example\"\nnarrative:\n  s: >-\n    p q\n"
         fd, path = tempfile.mkstemp(suffix=".yml")
         try:
             with os.fdopen(fd, "w") as f:
