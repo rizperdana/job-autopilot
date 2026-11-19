@@ -153,3 +153,89 @@ class TestMappingRegressions(unittest.TestCase):
         # monkey: profile email replaced with location-like string is not in profile;
         # instead call _shape_ok
         self.assertFalse(form._shape_ok("email", "Test City, Indonesia")[0])
+
+
+class TestProfileLoading(unittest.TestCase):
+    """Bug 1 regression: profile facts must survive YAML parsing."""
+
+    def test_fallback_parser_block_scalars_lists_comments(self):
+        from ja.config import _parse_yaml
+        text = (
+            "# header comment\n"
+            "candidate:\n"
+            "  full_name: \"Example Candidate\"  # inline comment\n"
+            "  email: \"a@b.co\"\n"
+            "  phone: '+1 555 0100'\n"
+            "narrative:\n"
+            "  exit_story: >-\n"
+            "    line one\n"
+            "    line two\n"
+            "target_roles:\n"
+            "  primary:\n"
+            "    - \"Senior Software Engineer\"\n"
+            "    - Fullstack Engineer\n"
+            "  archetypes:\n"
+            "    - name: Fullstack Engineer\n"
+            "      level: Senior\n"
+            "      fit: primary\n"
+        )
+        d = _parse_yaml(text)
+        self.assertEqual(d["candidate"]["full_name"], "Example Candidate")
+        self.assertEqual(d["candidate"]["email"], "a@b.co")
+        self.assertEqual(d["candidate"]["phone"], "+1 555 0100")
+        self.assertEqual(d["narrative"]["exit_story"], "line one line two")
+        self.assertEqual(d["target_roles"]["primary"], ["Senior Software Engineer", "Fullstack Engineer"])
+        self.assertEqual(d["target_roles"]["archetypes"][0]["level"], "Senior")
+
+    def test_yaml_first_when_available(self):
+        # _load_yaml_file must prefer PyYAML (handles everything) and fall back cleanly
+        from ja import config as cfg
+        import tempfile, os
+        text = "candidate:\n  full_name: \"A B\"\n  email: \"x@y.zz\"\nnarrative:\n  s: >-\n    p q\n"
+        fd, path = tempfile.mkstemp(suffix=".yml")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+            d = cfg._load_yaml_file(path)
+            self.assertEqual(d["candidate"]["full_name"], "A B")
+            self.assertEqual(d["narrative"]["s"], "p q")
+        finally:
+            os.unlink(path)
+
+    def test_profile_facts_tolerates_non_dict(self):
+        # passing the function (not a dict) must not crash and yields all-None facts
+        facts = form._profile_facts(lambda: {})
+        self.assertIsNone(facts["full_name"])
+        self.assertIsNone(facts["email"])
+
+
+class TestSelectorEscaping(unittest.TestCase):
+    """Bug 2 regression: Radix ids with '.' and ':' must produce valid CSS."""
+
+    def test_quoted_attr_selector_matches_radix_id(self):
+        # pure-CSS check via a tiny local page; skipped gracefully if playwright missing
+        try:
+            from playwright.sync_api import sync_playwright
+        except Exception:
+            self.skipTest("playwright not installed")
+        bad_id = "input-candidate.openQuestionAnswers.7461474.content-radix-:R12qnl9r6l:"
+        sel = '[id="%s"]' % bad_id
+        pw = sync_playwright().start()
+        try:
+            b = pw.chromium.launch(headless=True)
+            p = b.new_page()
+            p.set_content('<input id="%s" value="v">' % bad_id)
+            self.assertEqual(p.eval_on_selector(sel, "e => e.value"), "v")
+            b.close()
+        finally:
+            pw.stop()
+
+    def test_selector_builder_escapes_quotes(self):
+        # reuse the same escaping rule the fill loop uses
+        v = 'a"b\\c'
+        sel = '[id="%s"]' % v.replace("\\", "\\\\").replace('"', '\\"')
+        self.assertEqual(sel, '[id="a\\"b\\\\c"]')
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -50,13 +50,15 @@ def _blacklisted(company):
         return False
     return company.strip().lower() in text
 
-def _duplicate(company, role, channel="form"):
+def _duplicate(company, role, channel="form", exclude_application_id=None):
     """True only if this company+role was already applied to on the SAME channel.
 
     A row that merely exists in `applications` is NOT a duplicate: discover/gate
     create rows for every posting (status discovered/gated/shortlisted). Only
     drafted/prefilled/submitted mean we already went out the door — and even then
     only on the same channel (a company may invite a web apply after an email).
+    exclude_application_id lets a resubmit of the SAME application row through
+    (its own prefilled row must not block itself).
     """
     try:
         import sqlite3
@@ -65,12 +67,12 @@ def _duplicate(company, role, channel="form"):
             return False
         conn = sqlite3.connect(str(db))
         try:
-            row = conn.execute(
-                "SELECT j.job_id FROM jobs j JOIN applications a ON a.job_id=j.job_id "
-                "WHERE lower(j.company)=? AND lower(j.role)=? AND lower(a.channel)=? "
-                "AND a.status IN ('drafted','prefilled','submitted') LIMIT 1",
-                (company.strip().lower(), role.strip().lower(), channel.strip().lower()),
-            ).fetchone()
+            sql = ("SELECT j.job_id FROM jobs j JOIN applications a ON a.job_id=j.job_id "
+                   "WHERE lower(j.company)=? AND lower(j.role)=? AND lower(a.channel)=? "
+                   "AND a.status IN ('drafted','prefilled','submitted') "
+                   "AND a.application_id != ? LIMIT 1")
+            row = conn.execute(sql, (company.strip().lower(), role.strip().lower(),
+                                     channel.strip().lower(), exclude_application_id if exclude_application_id is not None else -1)).fetchone()
         finally:
             conn.close()
         return row is not None
@@ -78,7 +80,11 @@ def _duplicate(company, role, channel="form"):
         return False
 
 def _profile_facts(profile):
-    c = (profile.get("candidate") or {}) if isinstance(profile, dict) else {}
+    # tolerate a non-dict profile (e.g. caller passed config.profile() un-called):
+    # facts become None -> map_fields yields NEEDS_HUMAN instead of crashing
+    if not isinstance(profile, dict):
+        profile = {}
+    c = profile.get("candidate") or {}
     comp = profile.get("compensation") or {}
     loc = profile.get("location") or {}
     cv = config.cv_text() or ""
@@ -317,8 +323,8 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
         log("stopped", reason="blacklist")
         _finalize(result, adir, steps)
         return result
-    # preflight: duplicate
-    if _duplicate(company, role):
+    # preflight: duplicate (never self-match the row being submitted)
+    if _duplicate(company, role, exclude_application_id=job.get("application_id")):
         result["stopped"] = "duplicate"
         log("stopped", reason="duplicate")
         _finalize(result, adir, steps)
@@ -344,6 +350,28 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
         page.wait_for_timeout(2000)
         log("navigated", url=page.url)
 
+        # dead-posting guard: ashby/personio render a "Job not found" page (HTTP 200)
+        try:
+            body_txt = page.evaluate("document.body.innerText.slice(0, 400)")
+            if body_txt and "not found" in body_txt.lower():
+                result["stopped"] = "dead"
+                log("stopped", reason="job not found (posting offline)")
+                _finalize(result, adir, steps)
+                return result
+        except Exception:
+            pass
+
+        # personio hides the form behind an Apply button
+        if (ats or "") == "personio":
+            try:
+                link = page.query_selector("a:has-text('Apply')")
+                if link:
+                    link.click()
+                    page.wait_for_timeout(3000)
+                    log("personio_apply_clicked", url=page.url)
+            except Exception:
+                pass
+
         # turnstile detection
         sitekey = None
         try:
@@ -366,7 +394,7 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
                 const out = [];
                 const nodes = document.querySelectorAll('input, textarea, select');
                 nodes.forEach((n, i) => {
-                    if (n.type === 'hidden' || n.type === 'submit' || n.type === 'button') return;
+                    if (n.type === 'hidden' || n.type === 'submit' || n.type === 'button' || n.type === 'search') return;
                     let label = '';
                     if (n.id) {
                         const l = document.querySelector('label[for=\"' + n.id + '\"]');
@@ -439,11 +467,12 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
                 result["needs_human"].append({"field": key, "label": f.get("label", "")})
                 continue
             try:
-                sel = None
+                # attribute selectors with quoted values: only \\ and " need escaping,
+                # immune to Radix ids with '.' and ':'
                 if f.get("id"):
-                    sel = f"#{f['id']}"
+                    sel = '[id="%s"]' % str(f["id"]).replace("\\", "\\\\").replace('"', '\\"')
                 elif f.get("name"):
-                    sel = f"[name='{f['name']}']"
+                    sel = '[name="%s"]' % str(f["name"]).replace("\\", "\\\\").replace('"', '\\"')
                 if sel:
                     page.fill(sel, str(val))
                     result["actions"].append({"action": "fill", "selector": sel, "value": str(val)[:40]})
@@ -459,6 +488,36 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
             except Exception as e:
                 result["needs_human"].append({"field": "cv_upload", "error": str(e)})
 
+        # required-but-unanswered gate: a REQUIRED field left NEEDS_HUMAN blocks
+        # submission (never invent). A field is required when its label carries a
+        # required marker or the element declares required/aria-required.
+        required_missing = []
+        try:
+            req_flags = page.evaluate("""() => {
+                const out = [];
+                document.querySelectorAll('input, textarea, select').forEach((n, i) => {
+                    if (n.type === 'hidden' || n.type === 'submit' || n.type === 'button' || n.type === 'search') return;
+                    let label = '';
+                    if (n.id) { const l = document.querySelector('label[for=\"' + n.id + '\"]'); if (l) label = l.innerText.trim(); }
+                    if (!label) { const wrap = n.closest('label'); if (wrap) label = wrap.innerText.trim(); }
+                    if (!label) label = n.getAttribute('aria-label') || n.name || '';
+                    const required = n.required || n.getAttribute('aria-required') === 'true'
+                        || /\\*|required/i.test(label);
+                    if (required) out.push({name: n.name || n.id || ('f'+i), label: label});
+                });
+                return out;
+            }""")
+        except Exception:
+            req_flags = []
+        seen_keys = {f.get("name") or f.get("id") or ("f%d" % i) for i, f in enumerate(fields)}
+        for rf in req_flags or []:
+            k = rf.get("name")
+            if k in seen_keys and mapping.get(k) == NEEDS_HUMAN:
+                required_missing.append(rf.get("label") or k)
+        if required_missing:
+            result["submit_blocked_reason"] = "missing required: " + "; ".join(required_missing[:8])
+            result["required_missing"] = required_missing
+
         # screenshot
         shot = adir / "form.png"
         try:
@@ -467,7 +526,7 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
         except Exception:
             pass
 
-        # submit guard (two-key)
+        # submit guard (two-key): both keys true AND no required-missing gate
         submit_sel = "button[type='submit'], input[type='submit'], button:has-text('Apply'), button:has-text('Submit')"
         # find a real submit button
         try:
@@ -479,18 +538,33 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
         except Exception:
             pass
         result["ready_to_submit"] = False
-        if allow_submit and confirm_submit:
+        if allow_submit and confirm_submit and not result.get("submit_blocked_reason"):
             # deliberate: still do NOT auto-click unless both keys true AND explicit
             result["ready_to_submit"] = True
             result["actions"].append({"action": "submit_click", "selector": result["submit_selector"]})
             try:
                 page.click(result["submit_selector"])
+                page.wait_for_timeout(4000)
+                # capture confirmation evidence (final URL + body signals)
+                try:
+                    final_url = page.url
+                    body_txt = page.evaluate("document.body.innerText.slice(0, 1500)")
+                    m = re.findall(r"(thank|received|success|submitted|application sent|congratulations|we.?ve got|applied)", body_txt or "", re.I)
+                    result["confirmation"] = {"url": final_url, "signals": sorted(set(m))[:10]}
+                except Exception:
+                    pass
+                try:
+                    page.screenshot(path=str(adir / "submitted.png"), full_page=True)
+                    result["artifacts"]["submitted_screenshot"] = str(adir / "submitted.png")
+                except Exception:
+                    pass
                 result["submitted"] = True
             except Exception as e:
                 result["needs_human"].append({"field": "submit", "error": str(e)})
         else:
             # record that we deliberately did NOT click
-            result["actions"].append({"action": "submit_blocked", "reason": "allow_submit=%s confirm_submit=%s" % (allow_submit, confirm_submit)})
+            reason = result.get("submit_blocked_reason") or ("allow_submit=%s confirm_submit=%s" % (allow_submit, confirm_submit))
+            result["actions"].append({"action": "submit_blocked", "reason": reason})
             result["ready_to_submit"] = bool(allow_submit)
 
         # collapse per-option noise: radio/checkbox groups repeat one field key per option
@@ -533,6 +607,9 @@ def _write_handoff(result, adir):
     if result.get("needs_human_captcha"):
         lines.append("Captcha: 3 attempts exhausted — solve manually.")
     lines.append("")
+    if result.get("submit_blocked_reason"):
+        lines.append("Submit blocked: %s" % result["submit_blocked_reason"])
+        lines.append("")
     lines.append("## Next actions for the human")
     lines.append("1. Open the screenshot: %s" % result["artifacts"].get("screenshot"))
     lines.append("2. Review filled fields; correct any NEEDS_HUMAN.")

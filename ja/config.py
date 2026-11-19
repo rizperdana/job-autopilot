@@ -1,5 +1,10 @@
-"""Configuration loading for job-autopilot (stdlib only)."""
+"""Configuration loading for job-autopilot (stdlib + optional PyYAML)."""
 import os
+try:
+    import yaml as _yaml
+except Exception:
+    _yaml = None
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -139,13 +144,23 @@ def _parse_yaml(text):
     result, _ = parse_block(0, lines[0][0])
     return result if result is not None else {}
 
+def _load_yaml_file(path):
+    text = Path(path).read_text()
+    if _yaml is not None:
+        try:
+            d = _yaml.safe_load(text)
+            return d if isinstance(d, dict) else {}
+        except Exception:
+            pass
+    return _parse_yaml(text)
+
 
 def load_config():
     cfg_path = ROOT / "config" / "ja.yml"
     if not cfg_path.exists():
         cfg_path = ROOT / "config" / "ja.example.yml"
     if cfg_path.exists():
-        return _parse_yaml(cfg_path.read_text())
+        return _load_yaml_file(cfg_path)
     return {}
 
 
@@ -193,7 +208,7 @@ def profile():
     p = profile_path()
     if not p.exists():
         return {}
-    return _parse_yaml(p.read_text())
+    return _load_yaml_file(p)
 
 
 def cv_text():
