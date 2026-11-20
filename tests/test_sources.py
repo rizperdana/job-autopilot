@@ -59,6 +59,14 @@ class TestSources(unittest.TestCase):
         self.assertNotEqual(j["url"], "https://acme.com/careers")
         self.assertNotEqual(j["apply_url"], "https://acme.com/careers")
 
+    def test_per_posting_url_and_date_reach_the_job(self):
+        # regression: discover must carry the requisition URL + posting date,
+        # not the board URL and not a null posted_at (which caps G2 at review)
+        j = sources.run()[0]
+        self.assertEqual(j["url"], "https://acme.com/jobs/123")
+        self.assertEqual(j["apply_url"], "https://acme.com/jobs/123/apply")
+        self.assertEqual(j["posted_at"], "2026-11-04")
+
     def test_no_postings_yields_zero_jobs(self):
         import json, tempfile
         from pathlib import Path

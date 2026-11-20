@@ -14,12 +14,94 @@ def _norm_role(role):
     return " ".join((role or "").lower().split())
 
 
+# ISO 3166-1 alpha-2 -> the spelling ja.gates already uses for that country. Codes we
+# cannot place stay verbatim, so the gate reports them as unclassified instead of guessing.
+_COUNTRY_CODES = {
+    "us": "united states", "gb": "united kingdom", "uk": "united kingdom",
+    "de": "germany", "fr": "france", "jp": "japan", "au": "australia",
+    "ca": "canada", "sg": "singapore", "nl": "netherlands", "ch": "switzerland",
+    "ie": "ireland", "se": "sweden", "dk": "denmark", "no": "norway",
+    "fi": "finland", "nz": "new zealand", "at": "austria", "be": "belgium",
+    "es": "spain", "it": "italy", "pt": "portugal", "kr": "south korea",
+    "il": "israel", "ae": "united arab emirates", "lu": "luxembourg",
+    "is": "iceland", "pl": "poland", "cz": "czechia", "si": "slovenia",
+    "ee": "estonia", "lt": "lithuania", "lv": "latvia", "sk": "slovakia",
+    "gr": "greece", "cy": "cyprus", "mt": "malta", "qa": "qatar",
+    "sa": "saudi arabia", "kw": "kuwait", "bh": "bahrain", "om": "oman",
+    "id": "indonesia", "ph": "philippines", "vn": "vietnam", "th": "thailand",
+    "my": "malaysia", "in": "india", "pk": "pakistan", "bd": "bangladesh",
+    "lk": "sri lanka", "np": "nepal", "kh": "cambodia", "la": "laos",
+    "mm": "myanmar", "ng": "nigeria", "ke": "kenya", "gh": "ghana",
+    "eg": "egypt", "ma": "morocco", "tn": "tunisia", "za": "south africa",
+    "br": "brazil", "ar": "argentina", "co": "colombia", "pe": "peru",
+    "cl": "chile", "mx": "mexico", "bo": "bolivia", "ec": "ecuador",
+    "ve": "venezuela", "ua": "ukraine", "ro": "romania", "bg": "bulgaria",
+    "rs": "serbia", "hr": "croatia", "hu": "hungary", "ru": "russia",
+    "by": "belarus", "tr": "turkey", "cn": "china", "mv": "maldives",
+    "tw": "taiwan", "hk": "hong kong", "mo": "macau", "bn": "brunei",
+    "tl": "timor-leste", "pg": "papua new guinea", "fj": "fiji",
+    "mn": "mongolia", "kz": "kazakhstan",
+}
+
+_COUNTRY_ALIASES = {
+    "u s": "united states", "u s a": "united states", "usa": "united states",
+    "us": "united states", "united states of america": "united states",
+    "uk": "united kingdom", "england": "united kingdom", "scotland": "united kingdom",
+    "wales": "united kingdom", "great britain": "united kingdom", "britain": "united kingdom",
+    "northern ireland": "united kingdom", "holland": "netherlands",
+    "the netherlands": "netherlands", "nederland": "netherlands",
+    "deutschland": "germany", "polska": "poland", "brasil": "brazil",
+    "espana": "spain", "españa": "spain", "italia": "italy",
+    "osterreich": "austria", "österreich": "austria", "schweiz": "switzerland",
+    "suisse": "switzerland", "turkiye": "turkey", "türkiye": "turkey",
+    "uae": "united arab emirates", "emirates": "united arab emirates",
+    "czech republic": "czechia", "republic of korea": "south korea",
+    "korea": "south korea", "korea republic of": "south korea",
+    "russian federation": "russia", "viet nam": "vietnam",
+    "hong kong sar": "hong kong", "china mainland": "china",
+    "mainland china": "china", "taiwan region": "taiwan",
+}
+
+# ATS country fields sometimes hold a scope word instead of a country ("Remote",
+# "Worldwide"). Those are not a country scope, so they must not become one.
+_NON_COUNTRY = {"remote", "remotely", "anywhere", "worldwide", "worldwide remote",
+                "global", "globally", "home", "home based", "flexible", "various",
+                "multiple", "any", "none", "unknown", "n/a", "-", "telecommute",
+                "distributed", "virtual", "world"}
+
+
+def _norm_country(value):
+    """"United States" / "US" / "Brasil" -> one spelling. Unmapped values pass through."""
+    v = " ".join(str(value or "").lower().replace(".", " ").replace(",", " ").split())
+    if not v or v in _NON_COUNTRY:
+        return None
+    if v in _COUNTRY_CODES and len(v) == 2:
+        return _COUNTRY_CODES[v]
+    if v in _COUNTRY_ALIASES:
+        return _COUNTRY_ALIASES[v]
+    return v
+
+
+def _norm_countries(values):
+    out = []
+    for raw in values or []:
+        c = _norm_country(raw)
+        if c and c not in out:
+            out.append(c)
+    return out
+
 def _make_job(company, role, url, apply_url, ats, channel, location_text,
-              worldwide_ok, posted_at, source, raw_extra=None):
+              worldwide_ok, posted_at, source, raw_extra=None, remote=None,
+              countries=None):
+    """One job record. `remote`/`location_countries` carry what the ATS said outright;
+    None/[] means the ATS did not say and the gate falls back to string inference."""
+    remote = remote if isinstance(remote, bool) else None
+    countries = _norm_countries(countries)
     raw = {
         "company": company, "role": role, "url": url, "apply_url": apply_url,
         "ats": ats, "channel": channel, "location_text": location_text,
         "worldwide_ok": worldwide_ok, "posted_at": posted_at, "source": source,
+        "remote": remote, "location_countries": countries,
     }
     if raw_extra:
         raw.update(raw_extra)
@@ -39,6 +121,8 @@ def _make_job(company, role, url, apply_url, ats, channel, location_text,
         "worldwide_ok": bool(worldwide_ok) if worldwide_ok is not None else None,
         "posted_at": posted_at,
         "source": source,
+        "remote": remote,
+        "location_countries": countries,
         "raw": raw,
         "dedupe_hash": dh,
     }
@@ -143,7 +227,9 @@ def _from_dataset(ds, livemap, pass2map, postings_path=None):
             apply_url = po.get("apply_url") or po.get("url") or careers
             job = _make_job(
                 name, title, url, apply_url, ats, channel, loc_text,
-                worldwide_ok, None, "remoteintech", raw_extra)
+                worldwide_ok, po.get("updated_at") or po.get("posted_at"),
+                "remoteintech", raw_extra, remote=po.get("remote"),
+                countries=po.get("countries"))
             job["email"] = email_addresses[0] if email_addresses else None
             jobs.append(job)
     return jobs, dropped

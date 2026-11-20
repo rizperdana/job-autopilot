@@ -57,6 +57,114 @@ LANG_MANDATES = ["japanese", "korean", "chinese", "mandarin", "german native",
                  "fluent german", "native german", "native japanese"]
 
 
+# Remote seats the candidate can actually take from UTC+7. A remote role scoped to any
+# other country is refused: the seat requires residency the candidate does not have.
+APAC_REMOTE_OPEN = {
+    "indonesia", "singapore", "malaysia", "thailand", "vietnam", "philippines",
+    "cambodia", "laos", "myanmar", "brunei", "timor-leste", "india", "sri lanka",
+    "nepal", "bangladesh", "pakistan", "bhutan", "maldives", "japan",
+    "south korea", "china", "hong kong", "macau", "taiwan", "mongolia",
+    "australia", "new zealand", "papua new guinea", "fiji",
+}
+# ponytail: empty on purpose. Add a country here when the user says the candidate is
+# hireable in it; until then a remote seat scoped there is refused.
+REMOTE_OPEN_COUNTRIES = set()
+
+_REGIONAL_TOKENS = ("americas", "americas-europe", "europe", "latam", "emea", "apac",
+                    "asia-pacific", "asia pacific", "asia", "africa", "mena", "anz",
+                    "namer", "amer", "north america", "south america", "latin america",
+                    "central america", "middle east", "eastern europe", "western europe",
+                    "northern europe", "uk ireland", "benelux", "dach", "nordics")
+_WORLDWIDE_RX = None
+_HOME_BASED_RX = None
+_REMOTE_RX = None
+_ONSITE_RX = None
+# Words that carry no scope: "Remote job", "fully remote", "100% remote", "remote only".
+_SCOPELESS_TOKENS = {
+    "remote", "remotely", "fully", "100", "job", "jobs", "position", "role", "work",
+    "working", "home", "based", "only", "location", "independent", "distributed",
+    "telecommute", "telecommuter", "teleworking", "wfh", "flexible", "time", "full",
+    "part", "any", "the", "a", "an", "or", "and", "in", "from", "worldwide", "global",
+    "anywhere",
+}
+
+
+def _init_scope_regexes():
+    global _WORLDWIDE_RX, _HOME_BASED_RX, _REMOTE_RX, _ONSITE_RX
+    if _WORLDWIDE_RX is None:
+        import re
+        _WORLDWIDE_RX = re.compile(r"(?<![a-z])(worldwide|globally|global|anywhere)(?![a-z])")
+        _HOME_BASED_RX = re.compile(r"(?<![a-z])home[ -]based(?![a-z])")
+        _REMOTE_RX = re.compile(r"(?<![a-z])remote(?:ly)?(?![a-z])")
+        _ONSITE_RX = re.compile(r"(?<![a-z])(onsite|on-site|on site|in-office|in office|"
+                                r"office-based|hybrid|in person|on premise|on-premise)(?![a-z])")
+
+
+def _has_scoped_geo(probe):
+    """True when the probe names a region or a country, i.e. the claim is scoped."""
+    import re
+    if any(re.search(r"(?<![a-z])" + re.escape(t) + r"(?![a-z])", probe) for t in _REGIONAL_TOKENS):
+        return True
+    return any(re.search(r"(?<![a-z])" + re.escape(w) + r"(?![a-z])", probe)
+               for w in DEVELOPED) or any(
+        re.search(r"(?<![a-z])" + re.escape(w) + r"(?![a-z])", probe) for w in DEVELOPING)
+
+
+def _worldwide_scope(loc_l):
+    """A location string that *states* worldwide remote. None when it names a scope.
+
+    The old check was an exact match against 9 strings, so 'Home based - Worldwide'
+    and 'Remote, Global' were treated as ambiguous."""
+    import re
+    probe = " ".join(loc_l.replace(".", " ").replace(",", " ").replace(";", " ").split())
+    if not probe or _has_scoped_geo(probe):
+        return None
+    _init_scope_regexes()
+    if _WORLDWIDE_RX.search(probe):
+        return "stated worldwide"
+    if _HOME_BASED_RX.search(probe):
+        return "home based without a region"
+    if _REMOTE_RX.search(probe) and not _ONSITE_RX.search(probe):
+        tokens = set(re.findall(r"[a-z]+", probe))
+        if tokens and tokens <= _SCOPELESS_TOKENS:
+            return "remote without a region scope"
+    return None
+
+
+def _structured_geography(job):
+    """The ATS's own location facts: (status, reason) or None to fall back to strings.
+
+    Authority order (structured beats any inference from the display string):
+      remote + no country            -> worldwide, available
+      remote + APAC / open country   -> available
+      remote + any other country     -> scoped remote, refused
+      onsite + developed country     -> review: needs relocation + visa sponsorship
+      onsite + developing country    -> refused
+    """
+    countries = [c for c in (job.get("location_countries") or []) if isinstance(c, str) and c]
+    remote = job.get("remote")
+    if remote is True:
+        if not countries:
+            return "pass", "ATS says remote with no country scope (worldwide)"
+        if all(c in APAC_REMOTE_OPEN or c in REMOTE_OPEN_COUNTRIES for c in countries):
+            return "pass", "ATS says remote scoped to APAC: " + ", ".join(countries)
+        scoped = [c for c in countries if c not in APAC_REMOTE_OPEN and c not in REMOTE_OPEN_COUNTRIES]
+        return "fail", "remote scoped to " + ", ".join(scoped)
+    if remote is False:
+        if not countries:
+            return None  # onsite but the ATS named no country: the string knows more
+        developing = [c for c in countries if c in DEVELOPING]
+        if developing:
+            return "fail", "onsite seat in developing country: " + ", ".join(developing)
+        developed = [c for c in countries if c in DEVELOPED]
+        if len(developed) == len(countries):
+            return "review", ("onsite in a developed country (" + ", ".join(countries) +
+                              "): needs relocation + visa sponsorship - verify manually")
+        return "review", ("onsite in " + ", ".join(countries) +
+                          ": country unclassified - verify manually")
+    return None
+
+
 def _parse_date(s):
     if not s:
         return None
@@ -186,6 +294,7 @@ def hard_gates(job):
     g3_status = "pass"
     g3_reasons = []
     evidence = None
+    structured_used = False
     p2 = _pass2(company)
     dsrow = _dataset_row(company)
     loc = (job.get("location_text") or "").strip()
@@ -232,8 +341,14 @@ def hard_gates(job):
         g3_reasons.append("exclusion: " + matched)
         evidence = matched
     else:
+        structured = _structured_geography(job)
+        if structured:
+            structured_used = True
+            g3_status, sreason = structured
+            g3_reasons.append(sreason)
+            evidence = "structured: " + sreason
         # company-level exclusion phrases (secondary)
-        if excl:
+        elif excl:
             g3_status = "fail"
             g3_reasons.append("exclusion_phrases: " + ", ".join(excl[:3]))
             evidence = ", ".join(excl[:3])
@@ -258,6 +373,10 @@ def hard_gates(job):
                 g3_status = "fail"
                 g3_reasons.append("country-locked: " + loc)
                 evidence = loc
+            elif _worldwide_scope(loc_l):
+                g3_status = "pass"
+                g3_reasons.append("worldwide scope stated: " + _worldwide_scope(loc_l))
+                evidence = "worldwide: " + (loc or "<none>")
             elif ambiguous:
                 if (wp or worldwide_ok is True):
                     g3_status = "pass"
@@ -287,7 +406,7 @@ def hard_gates(job):
     text_all = (loc_l + " " + job_text)
     mode = "ONSITE" if _onsite_rx.search(text_all) else ("REMOTE" if _remote_rx.search(text_all) else "UNKNOWN")
     # onsite seat in developing country -> reject
-    if mode == "ONSITE":
+    if mode == "ONSITE" and not structured_used:
         dev_hit = None
         for w in DEVELOPING:
             if _re2.search(r"(?<![a-z])" + _re2.escape(w) + r"(?![a-z])", loc_l):

@@ -99,7 +99,7 @@ class TestGates(unittest.TestCase):
     def test_g3_ambiguous_downgrades(self):
         job = {"job_id": "a", "company": "Acme", "role": "Senior Software Engineer",
                "url": "http://x", "apply_url": "http://x", "ats": "custom",
-               "channel": "form", "location_text": "Remote",
+               "channel": "form", "location_text": "Remote - APAC",
                "worldwide_ok": None, "posted_at": "2026-11-01", "source": "remoteintech"}
         r = gates.evaluate(job)
         g3 = [g for g in r["gate_results"] if g["gate"] == "G3"][0]
@@ -172,14 +172,16 @@ class TestGates(unittest.TestCase):
         self.assertEqual(r["decision"], "reject_hard")
         self.assertEqual(r["failed_gate"], "G3")
 
-    def test_g3_bare_remote_review(self):
+    def test_g3_bare_remote_worldwide_pass(self):
+        # Fix B: a bare "Remote" states a worldwide scope, so it is not ambiguous.
         job = {"job_id": "br", "company": "Acme", "role": "Senior Software Engineer",
                "url": "http://x", "apply_url": "http://x", "ats": "custom",
                "channel": "form", "location_text": "Remote", "worldwide_ok": None,
                "posted_at": "2026-11-01", "source": "remoteintech"}
         r = gates.evaluate(job)
         g3 = [g for g in r["gate_results"] if g["gate"] == "G3"][0]
-        self.assertEqual(g3["status"], "review")
+        self.assertEqual(g3["status"], "pass")
+        self.assertIn("worldwide", g3["reason"].lower())
 
     def test_g3_worldwide_company_region_locked_job_reject(self):
         import json, tempfile
@@ -369,6 +371,53 @@ class TestAggregatorFilter(unittest.TestCase):
         finally:
             config.dataset_path = orig
 
+
+
+class TestG3StructuredLocation(unittest.TestCase):
+    """The ATS's own location facts decide, in the order the user fixed."""
+
+    @staticmethod
+    def job(**kw):
+        j = {"job_id": "s", "company": "Acme", "role": "Senior Software Engineer",
+             "url": "http://x", "apply_url": "http://x", "ats": "custom",
+             "channel": "form", "location_text": "Remote", "worldwide_ok": None,
+             "posted_at": "2026-11-01", "source": "remoteintech",
+             "remote": None, "location_countries": []}
+        j.update(kw)
+        return j
+
+    @staticmethod
+    def g3(job):
+        return [g for g in gates.evaluate(job)["gate_results"] if g["gate"] == "G3"][0]
+
+    def test_remote_scoped_to_us_refused(self):
+        job = self.job(remote=True, location_countries=["united states"])
+        r = gates.evaluate(job)
+        self.assertEqual(r["decision"], "reject_hard")
+        self.assertEqual(r["failed_gate"], "G3")
+        self.assertIn("remote scoped to united states", self.g3(job)["reason"].lower())
+
+    def test_remote_without_country_is_worldwide(self):
+        g3 = self.g3(self.job(remote=True, location_countries=[]))
+        self.assertEqual(g3["status"], "pass")
+        self.assertIn("worldwide", g3["reason"].lower())
+
+    def test_onsite_developed_country_review_names_sponsorship(self):
+        g3 = self.g3(self.job(remote=False, location_countries=["germany"]))
+        self.assertEqual(g3["status"], "review")
+        self.assertIn("sponsor", g3["reason"].lower())
+
+    def test_onsite_developing_country_refused(self):
+        job = self.job(remote=False, location_countries=["indonesia"])
+        r = gates.evaluate(job)
+        self.assertEqual(r["decision"], "reject_hard")
+        self.assertEqual(r["failed_gate"], "G3")
+        self.assertIn("onsite seat in developing country", self.g3(job)["reason"].lower())
+
+    def test_home_based_worldwide_is_not_ambiguous(self):
+        g3 = self.g3(self.job(location_text="Home based - Worldwide"))
+        self.assertEqual(g3["status"], "pass")
+        self.assertNotIn("ambiguous", g3["reason"].lower())
 
 if __name__ == "__main__":
     unittest.main()
