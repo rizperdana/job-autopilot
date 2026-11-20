@@ -7,10 +7,21 @@ Run in order:
 2. `python3 -m ja gate` — apply G1–G7 + scored gates; writes `~/.job-autopilot/shortlist.json` + rejection histogram.
 3. `python3 -m ja draft` — draft emails/forms for shortlisted jobs (Gmail drafts created, not sent).
 4. `python3 -m ja apply` — form channel: prefill + one-click handoff (no auto-submit by default).
-5. `python3 -m ja sync` — sync applications into career-ops (`batch/tracker-additions/*.tsv`).
-6. `python3 -m ja report` — weekly markdown dashboard.
-
-Expected output: funnel counts per step; artifacts land under `~/.job-autopilot/runs/<date>/` and `~/.job-autopilot/shortlist.json`.
+5. `python3 -m ja batch-apply --limit N [--max-submissions N] [--confirm-submit]` — form channel: measure
+   each candidate, submit only the ones that pass the gate (`pct >= 90` AND nothing required blank AND no
+   captcha/auth wall). The gates are re-run at selection time (a stored decision in `shortlist.json` is a
+  cache with no invalidation key) and only engineering roles (rank <= 2) are drawn. Before any browser
+  starts, one GET on each candidate's `apply_url` refuses a 404/410 (dead posting) and, separately, a
+  403/429 (a wall in front of a live page); both are counted in the tally and every other outcome —
+  5xx, timeout, DNS — counts as alive so a blip never drops a job. `--dry-run` measures with no submit.
+  Never submits without `--confirm-submit`, and never past the submission cap (config default 0 = refuse
+  everything; the per-run `--max-submissions` override is reported). Email-channel jobs are drafts the
+  candidate sends, never counted here.
+6. `python3 -m ja sync` — sync applications into career-ops (`batch/tracker-additions/*.tsv`).
+7. `python3 -m ja report` — weekly markdown dashboard.
+Expected output: funnel counts per step; artifacts land under `~/.job-autopilot/runs/<date>/` and
+`~/.job-autopilot/shortlist.json`; `batch-apply` appends one JSON line per attempt to
+`~/.job-autopilot/reports/batch-apply-<date>.jsonl`.
 
 ## 2. Reviewing drafts
 
@@ -21,6 +32,12 @@ Expected output: funnel counts per step; artifacts land under `~/.job-autopilot/
 ## 3. Form handoff
 
 - Prefilled page + artifacts: filled-field JSON + screenshot + handoff instructions under `runs/<date>/`.
+- Field labels come from one ladder per control: `label[for]` -> wrapping `<label>` ->
+  `aria-labelledby` -> `aria-label` -> preceding sibling text -> `fieldset > legend` -> the closest
+  block heading -> the placeholder. The source is kept: a placeholder-derived label appears in
+  `confidence.json` with `label_source: "placeholder"` and reads "(placeholder only)", and
+  `confidence.placeholder_only` counts them. A required control with no name, no id and no readable
+  question text is counted in `unresolved_required`, never scored and never blocking.
 - Solve captcha yourself if the solver fails or attempts exceed 3; then click Submit.
 
 ## 4. Recording outcomes
@@ -52,4 +69,7 @@ Expected output: funnel counts per step; artifacts land under `~/.job-autopilot/
 
 - `config.policy.allow_automated_submit`: false (default). Set true only with recorded per-run opt-in.
 - Daily caps: set in config; enforced by the daily loop.
+- `policy.max_submissions_per_day`: 0 (default) means no submission is authorized. `batch-apply
+  --max-submissions N` overrides it for that one run and prints the override; the runner never rewrites
+  the config file.
 - Stop everything: set `allow_automated_submit: false` and kill the running process; drafts already created remain (candidate decides).

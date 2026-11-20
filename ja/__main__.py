@@ -1,6 +1,7 @@
 """CLI entry point: python3 -m ja ...
 
-Subcommands: doctor selftest discover gate draft apply sync stats status report loop.
+Subcommands: doctor selftest discover gate draft apply batch-apply sync stats
+status report loop.
 Every command supports --dry-run. draft never sends; apply never auto-submits
 (two-key rule) -- the boundary is a Gmail draft / prefill handoff.
 """
@@ -220,6 +221,19 @@ def cmd_apply(args):
             prefilled += 1
     print("apply done:", prefilled, "handoff(s)")
 
+def cmd_batch_apply(args):
+    """Form channel: measure each candidate, submit only what passes the gate."""
+    from . import batch_apply
+    decisions = tuple(d.strip().lower()
+                      for d in (getattr(args, "decision", None) or "apply").split(",")
+                      if d.strip())
+    batch_apply.run_batch(limit=args.limit,
+                          attempts=getattr(args, "attempts", None),
+                          max_submissions=getattr(args, "max_submissions", None),
+                          dry=_dry(args),
+                          confirm_submit=bool(getattr(args, "confirm_submit", False)),
+                          decisions=decisions)
+
 
 def cmd_status(args):
     tracker.init_db()
@@ -278,6 +292,13 @@ def main():
     p = add("apply", cmd_apply)
     p.add_argument("--limit", type=int, default=5)
     p.add_argument("--confirm-submit", action="store_true")
+    p = add("batch-apply", cmd_batch_apply)
+    p.add_argument("--limit", type=int, default=5)
+    p.add_argument("--attempts", type=int, default=None)
+    p.add_argument("--max-submissions", type=int, default=None)
+    p.add_argument("--confirm-submit", action="store_true")
+    p.add_argument("--decision", default="apply",
+                   help="gate decisions to draw from, comma separated (default: apply)")
     p = add("loop", cmd_loop)
     p.add_argument("--limit", type=int, default=5)
     p = add("status", cmd_status)

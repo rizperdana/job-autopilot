@@ -55,12 +55,14 @@ def already_drafted(job_id, channel=None):
         if channel:
             row = conn.execute(
                 "SELECT status FROM applications WHERE job_id=? AND channel=? "
-                "AND status IN ('drafted','prefilled','submitted_auto','submitted_human')",
+                "AND status IN ('drafted','prefilled','submitted','submitted_auto',"
+                "'submitted_human')",
                 (job_id, channel)).fetchone()
         else:
             row = conn.execute(
                 "SELECT status FROM applications WHERE job_id=? "
-                "AND status IN ('drafted','prefilled','submitted_auto','submitted_human')",
+                "AND status IN ('drafted','prefilled','submitted','submitted_auto',"
+                "'submitted_human')",
                 (job_id,)).fetchone()
         return row[0] if row else None
     finally:

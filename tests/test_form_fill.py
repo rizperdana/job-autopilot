@@ -488,3 +488,57 @@ class TestConfidenceArtifact(unittest.TestCase):
         self.assertEqual(conf["fields"][0]["name"], "email")
         self.assertEqual(result["confidence"]["fields"], conf["fields"])
         self.assertEqual(result["artifacts"]["confidence_json"], str(d / "confidence.json"))
+
+
+class TestAnswerBank(unittest.TestCase):
+    """The bank was dead code: no caller ever passed a path (fixed 2026-11-20)."""
+
+    def test_default_path_is_the_runtime_answers_file(self):
+        p = form.default_answers_path()
+        self.assertEqual(p.name, "answers.yml")
+        self.assertEqual(p.parent, form._runtime())
+        self.assertEqual(form.answers_source(None), p)
+
+    def test_no_file_means_no_bank_and_no_crash(self):
+        self.assertEqual(form._answer_bank(form.answers_source(None)), {})
+
+    def test_a_path_is_loaded_and_empty_means_disabled(self):
+        import tempfile
+        from pathlib import Path
+        d = Path(tempfile.mkdtemp())
+        p = d / "answers.yml"
+        p.write_text('"notice period": "4 weeks"\n')
+        self.assertEqual(form._answer_bank(form.answers_source(str(p))),
+                         {"notice period": "4 weeks"})
+        self.assertIsNone(form.answers_source(""))
+        self.assertIsNone(form.answers_source(False))
+        self.assertEqual(form._answer_bank(form.answers_source("")), {})
+
+
+class TestLabelSource(unittest.TestCase):
+    """A placeholder is not a question; the row says so instead of pretending."""
+
+    def _row(self, f):
+        c = form._confidence([f], {}, [], False)
+        return c["fields"][0], c
+
+    def test_a_placeholder_only_field_is_marked_and_counted(self):
+        row, c = self._row({"name": "q1", "label": "type your response",
+                            "label_source": "placeholder", "type": "textarea"})
+        self.assertEqual(row["label_source"], "placeholder")
+        self.assertEqual(c["placeholder_only"], 1)
+        self.assertEqual(c["missing"], ["type your response (placeholder only)"])
+
+    def test_a_properly_labelled_field_carries_no_label_source(self):
+        row, c = self._row({"name": "email", "label": "Email",
+                            "label_source": "for", "type": "email"})
+        self.assertNotIn("label_source", row)
+        self.assertEqual(c["placeholder_only"], 0)
+        self.assertEqual(sorted(row), ["label", "name", "required", "score", "state", "type"])
+
+    def test_an_informative_source_travels_with_the_row(self):
+        row, _ = self._row({"name": "q2", "label": "Which middleware?",
+                            "label_source": "legend", "type": "text"})
+        self.assertEqual(row["label_source"], "legend")
+        self.assertEqual(row["label"], "Which middleware?")
+

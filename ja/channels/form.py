@@ -29,6 +29,63 @@ ATS_HOSTS = [
 
 NEEDS_HUMAN = "NEEDS_HUMAN"
 
+# The label ladder, shared by both discovery passes. A human finds a question's
+# text by trying these in order; so do we, and we say which one won so the
+# confidence row can report "placeholder only" instead of pretending a
+# placeholder is a question. Expects the `ladder` helper and returns
+# [text, source] with source in for/label-wrap/aria-labelledby/aria-label/
+# sibling/legend/heading/placeholder/none.
+_LADDER_JS = r"""
+const _blockLabel = (n) => {
+    const sel = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,.label,.field-label,'
+              + '[class*="field-label"],[class*="question"],[class*="form-label"]';
+    let anc = n.parentElement, deep = 0;
+    while (anc && deep < 4) {
+        for (const c of anc.querySelectorAll(sel)) {
+            if (c.contains(n)) continue;
+            const t = (c.innerText || '').split('\n')[0].trim();
+            if (t && t.length <= 120) return t;
+        }
+        anc = anc.parentElement; deep++;
+    }
+    return '';
+};
+const ladder = (n) => {
+    if (n.id) {
+        const esc = (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        let l = null;
+        try { l = document.querySelector('label[for="' + esc(n.id) + '"]'); } catch (e) { l = null; }
+        if (l && l.innerText.trim()) return [l.innerText.trim(), 'for'];
+    }
+    const wrap = n.closest('label');
+    if (wrap && wrap.innerText.trim()) return [wrap.innerText.trim(), 'label-wrap'];
+    const lb = n.getAttribute('aria-labelledby');
+    if (lb) {
+        const t = lb.split(/\s+/).map(id => { const e = document.getElementById(id); return e ? (e.innerText || '') : ''; })
+            .join(' ').replace(/\s+/g, ' ').trim();
+        if (t) return [t, 'aria-labelledby'];
+    }
+    const al = (n.getAttribute('aria-label') || '').trim();
+    if (al) return [al, 'aria-label'];
+    let sib = n.previousElementSibling, hops = 0;
+    while (sib && hops < 3) {
+        const t = (sib.innerText || '').split('\n')[0].trim();
+        if (t && t.length <= 120) return [t, 'sibling'];
+        sib = sib.previousElementSibling; hops++;
+    }
+    const fs = n.closest('fieldset');
+    if (fs) {
+        const lg = fs.querySelector('legend');
+        if (lg && lg.innerText.trim()) return [lg.innerText.trim(), 'legend'];
+    }
+    const bl = _blockLabel(n);
+    if (bl) return [bl, 'heading'];
+    const ph = (n.getAttribute('placeholder') || '').trim();
+    if (ph) return [ph, 'placeholder'];
+    return ['', 'none'];
+};
+"""
+
 def detect_ats(url):
     host = (urlparse(url).hostname or "").lower()
     for name, domains in ATS_HOSTS:
@@ -112,6 +169,23 @@ def _profile_facts(profile):
         "salary": comp.get("target_range") or comp.get("minimum"),
         "how_heard": "job board",
     }
+
+ANSWERS_DEFAULT = "answers.yml"   # under the runtime dir; may legitimately not exist
+
+def default_answers_path():
+    return _runtime() / ANSWERS_DEFAULT
+
+def answers_source(path=None):
+    """Resolve the answer-bank path: None -> the default file, falsy -> disabled.
+
+    `answers_path=None` (what both call sites pass) means "use the default
+    answers.yml"; passing "" or False is the explicit way to run with no bank at
+    all. A missing file is not an error: _answer_bank returns {} and the run
+    behaves exactly as it did before the bank was wired in.
+    """
+    if path is None:
+        return default_answers_path()
+    return Path(path) if path else None
 
 def _answer_bank(path):
     if not path:
@@ -259,10 +333,16 @@ def _has_real_value(value):
     v = str(value).strip()
     return bool(v) and v != NEEDS_HUMAN
 
-def _human_label(label, key):
-    """A label a human can act on: never a bare synthetic key like f8."""
+def _human_label(label, key, source=None):
+    """A label a human can act on: never a bare synthetic key like f8.
+
+    `source` is where the ladder found the text. A placeholder is not a
+    question, so we say so instead of passing it off as one.
+    """
     label = (label or "").strip()
     if label:
+        if (source or "").strip().lower() == "placeholder":
+            return "%s (placeholder only)" % label
         return label
     m = re.fullmatch(r"f(\d+)", str(key or ""))
     if m:
@@ -300,7 +380,7 @@ def _confidence(req_flags, mapping, fields, uploaded, channel="form"):
             unresolved += 1
             continue
         req_keys.add(key)
-        label = _human_label(rf.get("label"), key)
+        label = _human_label(rf.get("label"), key, rf.get("label_source"))
         if (rf.get("type") or "").lower() == "file":
             total += 1
             if uploaded:
@@ -320,7 +400,7 @@ def _confidence(req_flags, mapping, fields, uploaded, channel="form"):
         fallback = True  # the page declared nothing required: measure all it exposes
         for i, f in enumerate(fields):
             key = f.get("name") or f.get("id") or "field_%d" % i
-            label = _human_label(f.get("label"), key)
+            label = _human_label(f.get("label"), key, f.get("label_source"))
             total += 1
             if _has_real_value(mapping.get(key)):
                 filled += 1
@@ -335,7 +415,7 @@ def _confidence(req_flags, mapping, fields, uploaded, channel="form"):
         if key in seen:
             continue
         seen.add(key)
-        label = _human_label(f.get("label"), key)
+        label = _human_label(f.get("label"), key, f.get("label_source"))
         ftype = (f.get("type") or "").lower() or "text"
         required = key in req_keys or fallback
         value = mapping.get(key)
@@ -350,8 +430,14 @@ def _confidence(req_flags, mapping, fields, uploaded, channel="form"):
         else:
             skipped += 1
             continue
-        rows.append({"label": label, "name": str(key), "type": ftype,
-                     "required": bool(required), "score": score, "state": state})
+        src = (f.get("label_source") or "").strip().lower()
+        row = {"label": label, "name": str(key), "type": ftype,
+               "required": bool(required), "score": score, "state": state}
+        # only the informative sources travel with the row: a page that labels
+        # its fields properly says nothing extra
+        if src and src not in ("for", "label-wrap"):
+            row["label_source"] = src
+        rows.append(row)
         scores.append(score)
     return {
         "pct": int(round(sum(scores) / float(len(scores)))) if scores else None,
@@ -363,6 +449,7 @@ def _confidence(req_flags, mapping, fields, uploaded, channel="form"):
         "fields": rows,
         "skipped_optional": skipped,
         "unresolved_required": unresolved,
+        "placeholder_only": sum(1 for r in rows if r.get("label_source") == "placeholder"),
     }
 
 def _resolve_cv(attach=None):
@@ -399,7 +486,7 @@ def _write_json(p, obj):
 
 def prepare_application(job, profile, answers_path=None, allow_submit=False,
                        artifacts_dir=None, confirm_submit=False, headless=True,
-                       timeout_ms=30000, attach=None, cv_path=None, cv=None):
+                       timeout_ms=30000, attach=None, cv_path=None, cv=None, gate=None):
     job = dict(job or {})
     job_id = job.get("job_id") or job.get("id") or "job"
     company = job.get("company", "")
@@ -426,6 +513,8 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
         "needs_human_captcha": False,
         "ready_to_submit": False,
         "submit_selector": None,
+        "password_fields": [],
+        "gate": None,
         "actions": [],
         # nothing measured yet: early returns (blacklist/duplicate/dead posting)
         # keep this shape so the key is always present, with pct null.
@@ -507,32 +596,33 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
         fields = []
         try:
             fields = page.evaluate("""() => {
+                %s
                 const out = [];
-                const nodes = document.querySelectorAll('input, textarea, select');
-                nodes.forEach((n, i) => {
+                document.querySelectorAll('input, textarea, select').forEach((n, i) => {
                     if (n.type === 'hidden' || n.type === 'submit' || n.type === 'button' || n.type === 'search') return;
                     // no name and no id: nothing can address it again (react-select's
                     // requiredInput mirror, tracking inputs). Not a fillable field.
                     if (!n.name && !n.id) return;
-                    let label = '';
-                    if (n.id) {
-                        const l = document.querySelector('label[for=\"' + n.id + '\"]');
-                        if (l) label = l.innerText.trim();
-                    }
-                    if (!label) {
-                        const wrap = n.closest('label');
-                        if (wrap) label = wrap.innerText.trim();
-                    }
-                    if (!label) label = n.getAttribute('aria-label') || n.getAttribute('placeholder') || n.name || '';
-                    out.push({label: label, name: n.name || n.id || ('f'+i), id: n.id || '', type: n.type || n.tagName.toLowerCase(), placeholder: n.getAttribute('placeholder') || ''});
+                    const [label, src] = ladder(n);
+                    out.push({label: label, label_source: src, name: n.name || n.id || ('f'+i),
+                              id: n.id || '', type: n.type || n.tagName.toLowerCase(),
+                              placeholder: n.getAttribute('placeholder') || ''});
                 });
                 return out;
-            }""")
+            }""" % _LADDER_JS)
         except Exception:
             fields = []
         log("fields_discovered", count=len(fields))
+        # a password input means a login/auth wall, never a job question: the
+        # submit gate refuses on it (never type a credential into an ATS form).
+        result["password_fields"] = [f.get("name") or f.get("id") for f in fields
+                                     if (f.get("type") or "").lower() == "password"]
+        if result["password_fields"]:
+            log("password_fields", count=len(result["password_fields"]))
 
-        answers = _answer_bank(answers_path)
+        bank_path = answers_source(answers_path)
+        answers = _answer_bank(bank_path)
+        log("answer_bank", path=str(bank_path) if bank_path else None, keys=len(answers))
         profile_facts = profile if isinstance(profile, dict) else {}
         # attach years_experience if present verbatim in profile/cv text
         # (we never invent; leave None unless caller supplies facts.years_experience)
@@ -613,22 +703,23 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
         required_missing = []
         try:
             req_flags = page.evaluate("""() => {
+                %s
                 const out = [];
                 document.querySelectorAll('input, textarea, select').forEach((n, i) => {
                     if (n.type === 'hidden' || n.type === 'submit' || n.type === 'button' || n.type === 'search') return;
-                    let label = '';
-                    if (n.id) { const l = document.querySelector('label[for=\"' + n.id + '\"]'); if (l) label = l.innerText.trim(); }
-                    if (!label) { const wrap = n.closest('label'); if (wrap) label = wrap.innerText.trim(); }
-                    if (!label) label = n.getAttribute('aria-label') || n.name || '';
+                    const [label, src] = ladder(n);
                     const required = n.required || n.getAttribute('aria-required') === 'true'
                         || /\\*|required/i.test(label);
                     // synthetic: no name/id, so the score treats it as unattributable
-                    // instead of scoring a field nobody can point at.
+                    // instead of scoring a field nobody can point at. With no
+                    // readable question text either it is counted, never scored
+                    // and never blocking (see _confidence.unresolved_required).
                     if (required) out.push({name: n.name || n.id || ('f'+i), label: label,
-                        type: (n.type || '').toLowerCase(), synthetic: !(n.name || n.id)});
+                        label_source: src, type: (n.type || '').toLowerCase(),
+                        synthetic: !(n.name || n.id)});
                 });
                 return out;
-            }""")
+            }""" % _LADDER_JS)
         except Exception:
             req_flags = []
         seen_keys = {f.get("name") or f.get("id") or ("f%d" % i) for i, f in enumerate(fields)}
@@ -668,8 +759,13 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
                 result["submit_selector"] = "button[type='submit']"
         except Exception:
             pass
+        # gate: an optional caller-supplied veto, evaluated where the decision is
+        # made (pct is only known here). None = no extra condition, exactly as
+        # before. The two keys above stay in force either way.
+        gate_ok, gate_reason = (True, "") if gate is None else gate(result)
+        result["gate"] = {"allowed": bool(gate_ok), "reason": gate_reason}
         result["ready_to_submit"] = False
-        if allow_submit and confirm_submit and not result.get("submit_blocked_reason"):
+        if allow_submit and confirm_submit and gate_ok and not result.get("submit_blocked_reason"):
             # deliberate: still do NOT auto-click unless both keys true AND explicit
             result["ready_to_submit"] = True
             result["actions"].append({"action": "submit_click", "selector": result["submit_selector"]})
@@ -694,7 +790,8 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
                 result["needs_human"].append({"field": "submit", "error": str(e)})
         else:
             # record that we deliberately did NOT click
-            reason = result.get("submit_blocked_reason") or ("allow_submit=%s confirm_submit=%s" % (allow_submit, confirm_submit))
+            reason = (result.get("submit_blocked_reason") or gate_reason
+                      or ("allow_submit=%s confirm_submit=%s" % (allow_submit, confirm_submit)))
             result["actions"].append({"action": "submit_blocked", "reason": reason})
             result["ready_to_submit"] = bool(allow_submit)
 

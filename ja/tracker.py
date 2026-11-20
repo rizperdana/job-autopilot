@@ -88,7 +88,8 @@ def record_event(kind, job_id=None, application_id=None, detail=None, dry_run=Fa
 
 
 VALID_STATUSES = {"discovered", "gated", "rejected", "shortlisted", "drafted",
-                  "prefilled", "submitted_auto", "submitted_human", "acknowledged",
+                  "prefilled", "submitted", "submitted_auto", "submitted_human",
+                  "acknowledged",
                   "screening", "interview", "offer", "rejected_by_employer",
                   "withdrawn", "ghosted"}
 
@@ -127,6 +128,29 @@ def set_status(app_id, status, dry_run=False):
         record_event("status_change", application_id=app_id, detail={"status": status})
     finally:
         conn.close()
+
+
+def mark_submitted(app_id, submitted_by, notes=None, job_id=None, dry_run=False):
+    """One application row -> submitted, in a single commit.
+
+    The row's status, submitted_at and submitted_by land together; the
+    connection is closed before record_event, which opens its own (holding a
+    write transaction across it self-deadlocks).
+    """
+    if dry_run:
+        print("dry-run: would mark application", app_id, "submitted")
+        return False
+    conn = _connect()
+    try:
+        conn.execute("UPDATE applications SET status='submitted', submitted_at=?, "
+                     "submitted_by=?, notes=COALESCE(?, notes) WHERE application_id=?",
+                     (_now(), submitted_by, notes, app_id))
+        conn.commit()
+    finally:
+        conn.close()
+    record_event("application_submitted", job_id=job_id, application_id=app_id,
+                 detail={"submitted_by": submitted_by, "status": "submitted"})
+    return True
 
 
 def stats():
