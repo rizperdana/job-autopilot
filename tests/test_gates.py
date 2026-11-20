@@ -215,6 +215,78 @@ class TestGates(unittest.TestCase):
             config.dataset_path = orig
 
 
+class TestG3DevelopingOnsite(unittest.TestCase):
+    def test_g3_onsite_developing_country_reject(self):
+        job = {"job_id": "od", "company": "Acme", "role": "Senior Software Engineer",
+               "url": "http://x", "apply_url": "http://x", "ats": "custom",
+               "channel": "form", "location_text": "Jakarta, Indonesia (On-site)",
+               "worldwide_ok": False, "posted_at": "2026-11-01", "source": "remoteintech"}
+        r = gates.evaluate(job)
+        self.assertEqual(r["decision"], "reject_hard")
+        self.assertEqual(r["failed_gate"], "G3")
+        g3 = [g for g in r["gate_results"] if g["gate"] == "G3"][0]
+        self.assertIn("onsite seat in developing country", g3["reason"].lower())
+
+    def test_g3_remote_indonesia_pass(self):
+        job = {"job_id": "ri", "company": "Acme", "role": "Senior Software Engineer",
+               "url": "http://x", "apply_url": "http://x", "ats": "custom",
+               "channel": "form", "location_text": "Test City, Indonesia (Remote)",
+               "worldwide_ok": False, "posted_at": "2026-11-01", "source": "remoteintech"}
+        r = gates.evaluate(job)
+        self.assertNotEqual(r["decision"], "reject_hard")
+        g3 = [g for g in r["gate_results"] if g["gate"] == "G3"][0]
+        self.assertEqual(g3["status"], "pass")
+
+    def test_g3_grandville_style_onsite_fail(self):
+        job = {"job_id": "gf", "company": "Grandville Food Indonesia",
+               "role": "FULL-STACK DEVELOPER", "url": "http://x", "apply_url": "http://x",
+               "ats": "custom", "channel": "form",
+               "location_text": "Jakarta, Indonesia (On-site)",
+               "worldwide_ok": False, "posted_at": "2026-11-01", "source": "remoteintech"}
+        r = gates.evaluate(job)
+        self.assertEqual(r["decision"], "reject_hard")
+        self.assertEqual(r["failed_gate"], "G3")
+
+    def test_g3_boston_hybrid_not_failed(self):
+        job = {"job_id": "bh", "company": "Acme", "role": "Senior Software Engineer",
+               "url": "http://x", "apply_url": "http://x", "ats": "custom",
+               "channel": "form", "location_text": "Boston, MA (Hybrid)",
+               "worldwide_ok": False, "posted_at": "2026-11-01", "source": "remoteintech"}
+        r = gates.evaluate(job)
+        self.assertNotEqual(r["failed_gate"], "G3")
+
+    def test_g3_remote_worldwide_pass(self):
+        job = {"job_id": "rw", "company": "Acme", "role": "Senior Software Engineer",
+               "url": "http://x", "apply_url": "http://x", "ats": "custom",
+               "channel": "form", "location_text": "Remote (Worldwide)",
+               "worldwide_ok": True, "posted_at": "2026-11-01", "source": "remoteintech"}
+        r = gates.evaluate(job)
+        self.assertNotEqual(r["decision"], "reject_hard")
+        g3 = [g for g in r["gate_results"] if g["gate"] == "G3"][0]
+        self.assertEqual(g3["status"], "pass")
+
+
+    def test_g3_exclusion_phrase_plus_hybrid_no_crash(self):
+        job = {"job_id": "hc", "company": "X", "role": "Senior Engineer (Hybrid)",
+               "url": "http://x", "apply_url": "http://x", "ats": "custom",
+               "channel": "form", "location_text": "United States - Remote",
+               "worldwide_ok": False, "posted_at": "2026-11-01", "source": "remoteintech"}
+        r = gates.evaluate(job)
+        self.assertIsInstance(r, dict)
+        self.assertIn("decision", r)
+
+    def test_g3_developing_onsite_plus_hybrid_reject(self):
+        job = {"job_id": "hd", "company": "X", "role": "Senior Engineer (Hybrid)",
+               "url": "http://x", "apply_url": "http://x", "ats": "custom",
+               "channel": "form", "location_text": "Jakarta, Indonesia (On-site)",
+               "worldwide_ok": False, "posted_at": "2026-11-01", "source": "remoteintech"}
+        r = gates.evaluate(job)
+        self.assertEqual(r["decision"], "reject_hard")
+        self.assertEqual(r["failed_gate"], "G3")
+        g3 = [g for g in r["gate_results"] if g["gate"] == "G3"][0]
+        self.assertIn("onsite seat in developing country", g3["reason"].lower())
+
+
 class TestScam(unittest.TestCase):
     FIXTURES_POS = [
         "Please pay a $50 application fee to proceed.",

@@ -1,4 +1,7 @@
 """Email channel wrapper around ja.gmail_draft (drafts only)."""
+import re
+from pathlib import Path
+
 from .. import gmail_draft as _gd
 
 build_message = _gd.build_message
@@ -13,10 +16,50 @@ create_draft = _gd.create_draft
 verify_draft = _gd.verify_draft
 create_and_verify = _gd.create_and_verify
 
+SIGNER = "Example"
+_OPENER_RE = re.compile(r"^Hi\s+\S.*\steam,$")
+
+def _cv_on_disk(attachments):
+    for a in attachments or []:
+        try:
+            if Path(str(a)).is_file():
+                return True
+        except Exception:
+            continue
+    return False
+
+def _confidence(to, subject, body, attachments=None, signer=SIGNER):
+    """Pure: percentage of the seven outbound-email facts that actually hold.
+
+    One point per fact; anything we cannot verify counts against us (never
+    inflate). total is always 7, so pct is never null here.
+    """
+    lines = [l.strip() for l in (body or "").splitlines() if l.strip()]
+    text = "\n".join(lines)
+    checks = [
+        ("recipient", bool(to)),
+        ("subject", bool((subject or "").strip())),
+        ("opener", bool(_OPENER_RE.match(lines[0])) if lines else False),
+        ("CV attached line", "My CV is attached." in text),
+        ("signature", any(l.lower() == signer.lower() for l in lines[-4:])),
+        ("CV file on disk", _cv_on_disk(attachments)),
+        ("body length", 80 <= len(text.split()) <= 200),
+    ]
+    filled = sum(1 for _, ok in checks if ok)
+    return {
+        "pct": int(round(100.0 * filled / 7)),
+        "method": "email-facts",
+        "total": 7,
+        "filled": filled,
+        "missing": [label for label, ok in checks if not ok][:8],
+        "channel": "email",
+    }
 
 def create_email_draft(to, cc=None, subject="", body="", attachments=None,
                       verify=False, max_bytes=25 * 1024 * 1024, timeout=30,
                       token_path=None, config_path=None):
+    # measured before the draft is created: these are the facts we vouch for
+    confidence = _confidence(to, subject, body, attachments)
     result = create_and_verify(
         to=to,
         cc=cc,
@@ -28,10 +71,11 @@ def create_email_draft(to, cc=None, subject="", body="", attachments=None,
         token_path=token_path,
         config_path=config_path,
     )
+    if isinstance(result, dict):
+        result["confidence"] = confidence
     if not verify:
         return result["draft_id"]
     return result
-
 
 draft = create_email_draft
 draft_email = create_email_draft

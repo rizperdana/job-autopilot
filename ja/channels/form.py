@@ -252,6 +252,60 @@ def _shape_ok(haystack, value):
             return False, "value is not numeric"
     return True, ""
 
+def _has_real_value(value):
+    """A value we actually filled: not empty, not None, not the NEEDS_HUMAN sentinel."""
+    if value is None:
+        return False
+    v = str(value).strip()
+    return bool(v) and v != NEEDS_HUMAN
+
+def _confidence(req_flags, mapping, fields, uploaded, channel="form"):
+    """Pure: how much of the page's data we are confident about, as a percentage.
+
+    Denominator is the page's own required fields (file inputs count as filled
+    only when an upload really happened); with no required flags at all it falls
+    back to every discovered field. Nothing to measure -> pct is None, never 0/100.
+    """
+    mapping = mapping if isinstance(mapping, dict) else {}
+    req_flags = [r for r in (req_flags or []) if isinstance(r, dict)]
+    fields = [f for f in (fields or []) if isinstance(f, dict)]
+    total = filled = 0
+    missing = []
+    for rf in req_flags:
+        key = rf.get("name")
+        label = (rf.get("label") or "").strip() or str(key or "")
+        if (rf.get("type") or "").lower() == "file":
+            total += 1
+            if uploaded:
+                filled += 1
+            else:
+                missing.append(label)
+            continue
+        total += 1
+        if _has_real_value(mapping.get(key)):
+            filled += 1
+        else:
+            missing.append(label)
+    method = "required-fields"
+    if total == 0 and fields:
+        method = "discovered-fields"
+        for i, f in enumerate(fields):
+            key = f.get("name") or f.get("id") or "field_%d" % i
+            label = (f.get("label") or "").strip() or str(key)
+            total += 1
+            if _has_real_value(mapping.get(key)):
+                filled += 1
+            else:
+                missing.append(label)
+    return {
+        "pct": None if total == 0 else int(round(100.0 * filled / total)),
+        "method": method,
+        "total": total,
+        "filled": filled,
+        "missing": missing[:8],
+        "channel": channel,
+    }
+
 def _resolve_cv(attach=None):
     """Resolve the CV attachment: explicit attach -> newest *.pdf under career-ops/output -> else error."""
     if attach:
@@ -314,6 +368,9 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
         "ready_to_submit": False,
         "submit_selector": None,
         "actions": [],
+        # nothing measured yet: early returns (blacklist/duplicate/dead posting)
+        # keep this shape so the key is always present, with pct null.
+        "confidence": _confidence([], {}, [], False, "form"),
         "artifacts": {},
     }
 
@@ -503,17 +560,25 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
                     if (!label) label = n.getAttribute('aria-label') || n.name || '';
                     const required = n.required || n.getAttribute('aria-required') === 'true'
                         || /\\*|required/i.test(label);
-                    if (required) out.push({name: n.name || n.id || ('f'+i), label: label});
+                    if (required) out.push({name: n.name || n.id || ('f'+i), label: label, type: (n.type || '').toLowerCase()});
                 });
                 return out;
             }""")
         except Exception:
             req_flags = []
         seen_keys = {f.get("name") or f.get("id") or ("f%d" % i) for i, f in enumerate(fields)}
+        uploaded = any(isinstance(a, dict) and a.get("action") == "upload" for a in result["actions"])
         for rf in req_flags or []:
+            if (rf.get("type") or "") == "file" and uploaded:
+                continue
             k = rf.get("name")
             if k in seen_keys and mapping.get(k) == NEEDS_HUMAN:
                 required_missing.append(rf.get("label") or k)
+
+        # confidence in what we filled: page's own required fields (upload counts)
+        result["confidence"] = _confidence(req_flags, mapping, fields, uploaded, "form")
+        log("confidence", **{k: v for k, v in result["confidence"].items() if k != "missing"})
+
         if required_missing:
             result["submit_blocked_reason"] = "missing required: " + "; ".join(required_missing[:8])
             result["required_missing"] = required_missing
@@ -585,6 +650,16 @@ def _finalize(result, adir, steps):
     result["artifacts"]["filled_json"] = str(adir / "filled.json")
     result["artifacts"]["steps_jsonl"] = str(adir / "steps.jsonl")
     result["artifacts"]["handoff_md"] = str(adir / "handoff.md")
+    conf = result.get("confidence")
+    if isinstance(conf, dict):
+        p = Path(adir) / "confidence.json"
+        tmp = p.with_name(p.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(conf, indent=2, ensure_ascii=False))
+            os.replace(tmp, p)
+            result["artifacts"]["confidence_json"] = str(p)
+        except Exception:
+            pass
     _write_json(adir / "filled.json", result)
     (adir / "steps.jsonl").write_text("".join(json.dumps(s) + "\n" for s in steps))
 

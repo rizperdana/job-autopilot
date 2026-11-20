@@ -239,3 +239,115 @@ class TestSelectorEscaping(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConfidence(unittest.TestCase):
+    """The submitted-data confidence percentage (pure helper, no browser)."""
+
+    def test_all_required_filled_is_100(self):
+        reqs = [{"name": "email", "label": "Email"}, {"name": "phone", "label": "Phone"}]
+        mapping = {"email": "a@b.example", "phone": "+00 000"}
+        c = form._confidence(reqs, mapping, [], False)
+        self.assertEqual(c["pct"], 100)
+        self.assertEqual(c["total"], 2)
+        self.assertEqual(c["filled"], 2)
+        self.assertEqual(c["missing"], [])
+        self.assertEqual(c["method"], "required-fields")
+
+    def test_half_of_four_required(self):
+        reqs = [{"name": k, "label": k.upper()} for k in ("a", "b", "c", "d")]
+        c = form._confidence(reqs, {"a": "x", "b": "y"}, [], False)
+        self.assertEqual(c["pct"], 50)
+        self.assertEqual(c["total"], 4)
+        self.assertEqual(c["filled"], 2)
+        self.assertEqual(c["missing"], ["C", "D"])
+
+    def test_no_required_flags_falls_back_to_discovered(self):
+        fields = [{"name": n, "label": n.upper()} for n in ("a", "b", "c", "d")]
+        c = form._confidence([], {"a": "x", "b": "y"}, fields, False)
+        self.assertEqual(c["method"], "discovered-fields")
+        self.assertEqual(c["pct"], 50)
+        self.assertEqual(c["total"], 4)
+        self.assertEqual(c["missing"], ["C", "D"])
+
+    def test_nothing_to_measure_is_null(self):
+        c = form._confidence([], {}, [], False)
+        self.assertIsNone(c["pct"])
+        self.assertEqual(c["total"], 0)
+        self.assertEqual(c["filled"], 0)
+        self.assertEqual(c["missing"], [])
+
+    def test_needs_human_counts_as_missing(self):
+        reqs = [{"name": "email", "label": "Email"}, {"name": "notice", "label": "Notice Period"}]
+        c = form._confidence(reqs, {"email": "a@b.example", "notice": form.NEEDS_HUMAN}, [], False)
+        self.assertEqual(c["pct"], 50)
+        self.assertEqual(c["missing"], ["Notice Period"])
+
+    def test_required_file_with_upload_is_filled(self):
+        reqs = [{"name": "email", "label": "Email", "type": "email"},
+                {"name": "cv", "label": "Resume", "type": "file"}]
+        c = form._confidence(reqs, {"email": "a@b.example"}, [], True)
+        self.assertEqual(c["pct"], 100)
+        self.assertEqual(c["filled"], 2)
+        self.assertEqual(c["total"], 2)
+        self.assertEqual(c["missing"], [])
+
+    def test_required_file_without_upload_is_missing(self):
+        reqs = [{"name": "email", "label": "Email", "type": "email"},
+                {"name": "cv", "label": "Resume", "type": "file"}]
+        c = form._confidence(reqs, {"email": "a@b.example"}, [], False)
+        self.assertEqual(c["pct"], 50)
+        self.assertEqual(c["missing"], ["Resume"])
+
+    def test_missing_labels_fall_back_to_name_and_cap_at_8(self):
+        reqs = [{"name": "f%d" % i, "label": ""} for i in range(10)]
+        c = form._confidence(reqs, {}, [], False)
+        self.assertEqual(c["missing"], ["f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7"])
+
+
+class TestEmailConfidence(unittest.TestCase):
+    """Second channel: the seven outbound-email facts."""
+
+    def _body(self, n_words=100):
+        filler = " ".join(["word"] * n_words)
+        return "Hi Acme team,\n\n%s\n\nMy CV is attached.\n\nWarm regards,\nExample" % filler
+
+    def test_all_facts_hold(self):
+        from ja.channels import email as em
+        c = em._confidence(["a@b.example"], "Application: X", self._body(),
+                           attachments=[__file__])
+        self.assertEqual(c["pct"], 100)
+        self.assertEqual(c["total"], 7)
+        self.assertEqual(c["filled"], 7)
+        self.assertEqual(c["channel"], "email")
+        self.assertEqual(c["method"], "email-facts")
+        self.assertEqual(c["missing"], [])
+
+
+    def test_bad_email_scores_zero_with_labels(self):
+        from ja.channels import email as em
+        c = em._confidence(None, "", "hey there", attachments=None)
+        self.assertEqual(c["total"], 7)
+        self.assertEqual(c["filled"], 0)
+        self.assertEqual(c["pct"], 0)
+        self.assertEqual(c["missing"], ["recipient", "subject", "opener",
+                                        "CV attached line", "signature",
+                                        "CV file on disk", "body length"])
+
+class TestConfidenceArtifact(unittest.TestCase):
+    """_finalize must persist confidence.json and keep it inside filled.json."""
+
+    def test_sidecar_written_atomically(self):
+        import json, tempfile
+        from pathlib import Path
+        d = Path(tempfile.mkdtemp())
+        result = {"company": "Acme", "role": "Dev", "confidence":
+                  form._confidence([{"name": "email", "label": "Email"}],
+                                   {"email": "a@b.example"}, [], False),
+                  "artifacts": {}}
+        form._finalize(result, d, [])
+        conf = json.loads((d / "confidence.json").read_text())
+        self.assertEqual(conf["pct"], 100)
+        self.assertEqual(conf["channel"], "form")
+        self.assertFalse((d / "confidence.json.tmp").exists())
+        self.assertEqual(result["artifacts"]["confidence_json"], str(d / "confidence.json"))

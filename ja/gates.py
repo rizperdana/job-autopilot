@@ -37,7 +37,21 @@ DEVELOPED = {"united states", "usa", "united kingdom", "uk", "germany", "france"
              "switzerland", "ireland", "sweden", "denmark", "norway", "finland",
              "new zealand", "austria", "belgium", "spain", "italy", "portugal",
              "south korea", "korea", "israel", "uae", "luxembourg", "iceland",
-             "poland", "czechia", "czech republic", "slovenia", "estonia"}
+             "poland", "czechia", "czech republic", "slovenia", "estonia",
+             "lithuania", "latvia", "slovakia", "greece", "cyprus", "malta",
+             "united arab emirates", "qatar", "saudi arabia", "kuwait",
+             "bahrain", "oman"}
+
+# Developing / poor countries where onsite seats are NOT acceptable.
+# Remote roles anywhere remain fine (handled separately by mode detection).
+DEVELOPING = {"indonesia", "philippines", "vietnam", "thailand", "malaysia",
+             "india", "pakistan", "bangladesh", "sri lanka", "nepal",
+             "cambodia", "laos", "myanmar", "nigeria", "kenya", "ghana",
+             "egypt", "morocco", "tunisia", "south africa", "brazil",
+             "argentina", "colombia", "peru", "chile", "mexico", "bolivia",
+             "ecuador", "venezuela", "ukraine", "romania", "bulgaria", "serbia",
+             "croatia", "hungary", "russia", "belarus", "turkey", "china",
+             "maldives"}
 
 LANG_MANDATES = ["japanese", "korean", "chinese", "mandarin", "german native",
                  "fluent german", "native german", "native japanese"]
@@ -183,6 +197,7 @@ def hard_gates(job):
     worldwide_ok = job.get("worldwide_ok")
 
     import re as _re
+    _re2 = _re
     excl_phrases = [
         "us-remote", "us - remote", "us remote", "u.s. remote", "(us remote)", "remote (us)", "remote - us",
         "remote us", "remote-us",
@@ -223,7 +238,6 @@ def hard_gates(job):
             g3_reasons.append("exclusion_phrases: " + ", ".join(excl[:3]))
             evidence = ", ".join(excl[:3])
         else:
-            import re as _re2
             developed_hit = any(_re2.search(r"(?<![a-z])" + _re2.escape(w) + r"(?![a-z])", loc_l) for w in DEVELOPED) or loc_l.strip() in ("us", "u.s.", "u.s.a.", "u.s")
             has_indonesia = "indonesia" in loc_l
             has_reloc = any(w in (loc_l + " " + job_text) for w in ("relocat", "visa", "sponsor"))
@@ -266,11 +280,29 @@ def hard_gates(job):
         g3_status = "fail"
         g3_reasons.append("requires US work auth without sponsorship")
         evidence = "authorized to work in the us (no sponsor)"
-    # onsite-only Indonesia
-    if "indonesia" in loc_l and "remote" not in loc_l and "onsite" in loc_l:
-        g3_status = "fail"
-        g3_reasons.append("onsite-only Indonesia seat")
-        evidence = "onsite Indonesia"
+    # mode detection for onsite vs remote
+    import re as _re3
+    _onsite_rx = _re3.compile(r"(?<![a-z])(onsite|on-site|on site|in-office|in office|office-based|hybrid|in person|on premise|on-premise)(?![a-z])", _re3.IGNORECASE)
+    _remote_rx = _re3.compile(r"(?<![a-z])(remote|worldwide|anywhere|work from home|distributed)(?![a-z])", _re3.IGNORECASE)
+    text_all = (loc_l + " " + job_text)
+    mode = "ONSITE" if _onsite_rx.search(text_all) else ("REMOTE" if _remote_rx.search(text_all) else "UNKNOWN")
+    # onsite seat in developing country -> reject
+    if mode == "ONSITE":
+        dev_hit = None
+        for w in DEVELOPING:
+            if _re2.search(r"(?<![a-z])" + _re2.escape(w) + r"(?![a-z])", loc_l):
+                dev_hit = w
+                break
+        if dev_hit:
+            g3_status = "fail"
+            g3_reasons.append("onsite seat in developing country: " + dev_hit)
+            evidence = "onsite developing: " + dev_hit
+        else:
+            developed_hit2 = any(_re2.search(r"(?<![a-z])" + _re2.escape(w) + r"(?![a-z])", loc_l) for w in DEVELOPED) or loc_l.strip() in ("us", "u.s.", "u.s.a.", "u.s")
+            if not developed_hit2:
+                g3_status = "review"
+                g3_reasons.append("onsite location unclassified - verify manually")
+                evidence = "onsite unclassified: " + (loc or "<none>")
     if evidence is None:
         evidence = loc or "<none>"
     g3_reasons.append("evidence=" + str(evidence))
