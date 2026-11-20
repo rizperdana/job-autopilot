@@ -16,8 +16,17 @@ create_draft = _gd.create_draft
 verify_draft = _gd.verify_draft
 create_and_verify = _gd.create_and_verify
 
-SIGNER = "Example"
 _OPENER_RE = re.compile(r"^Hi\s+\S.*\steam,$")
+
+def _resolve_signer():
+    """The signature the email body actually uses: the profile's first name,
+    read at runtime so no personal name is hardcoded in the repo."""
+    try:
+        from .. import config
+        name = ((config.profile().get("candidate") or {}).get("full_name") or "").strip()
+        return name.split()[0] if name else ""
+    except Exception:
+        return ""
 
 def _cv_on_disk(attachments):
     for a in attachments or []:
@@ -28,12 +37,14 @@ def _cv_on_disk(attachments):
             continue
     return False
 
-def _confidence(to, subject, body, attachments=None, signer=SIGNER):
+def _confidence(to, subject, body, attachments=None, signer=None):
     """Pure: percentage of the seven outbound-email facts that actually hold.
 
     One point per fact; anything we cannot verify counts against us (never
     inflate). total is always 7, so pct is never null here.
     """
+    if signer is None:
+        signer = _resolve_signer()
     lines = [l.strip() for l in (body or "").splitlines() if l.strip()]
     text = "\n".join(lines)
     checks = [
@@ -41,7 +52,7 @@ def _confidence(to, subject, body, attachments=None, signer=SIGNER):
         ("subject", bool((subject or "").strip())),
         ("opener", bool(_OPENER_RE.match(lines[0])) if lines else False),
         ("CV attached line", "My CV is attached." in text),
-        ("signature", any(l.lower() == signer.lower() for l in lines[-4:])),
+        ("signature", bool(signer) and any(l.lower() == signer.lower() for l in lines[-4:])),
         ("CV file on disk", _cv_on_disk(attachments)),
         ("body length", 80 <= len(text.split()) <= 200),
     ]

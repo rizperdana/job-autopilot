@@ -310,12 +310,12 @@ class TestEmailConfidence(unittest.TestCase):
 
     def _body(self, n_words=100):
         filler = " ".join(["word"] * n_words)
-        return "Hi Acme team,\n\n%s\n\nMy CV is attached.\n\nWarm regards,\nExample" % filler
+        return "Hi Acme team,\n\n%s\n\nMy CV is attached.\n\nWarm regards,\nTest Candidate" % filler
 
     def test_all_facts_hold(self):
         from ja.channels import email as em
         c = em._confidence(["a@b.example"], "Application: X", self._body(),
-                           attachments=[__file__])
+                           attachments=[__file__], signer="Test Candidate")
         self.assertEqual(c["pct"], 100)
         self.assertEqual(c["total"], 7)
         self.assertEqual(c["filled"], 7)
@@ -333,6 +333,35 @@ class TestEmailConfidence(unittest.TestCase):
         self.assertEqual(c["missing"], ["recipient", "subject", "opener",
                                         "CV attached line", "signature",
                                         "CV file on disk", "body length"])
+
+class TestEmailSignerResolution(unittest.TestCase):
+    """The default signer is read from the profile, never hardcoded."""
+
+    def _first(self):
+        from ja import config
+        try:
+            name = ((config.profile().get("candidate") or {}).get("full_name") or "").strip()
+        except Exception:
+            name = ""
+        return name.split()[0] if name else ""
+
+    def _body(self, last, n_words=100):
+        filler = " ".join(["word"] * n_words)
+        return "Hi Acme team,\n\n%s\n\nMy CV is attached.\n\nWarm regards,\n%s" % (filler, last)
+
+    def test_default_signer_scores_signature_fact(self):
+        from ja.channels import email as em
+        first = self._first()
+        if not first:
+            self.skipTest("no profile on this machine")
+        ok = em._confidence(["a@b.example"], "Application: X", self._body(first),
+                            attachments=[__file__], signer=None)
+        self.assertNotIn("signature", ok["missing"])
+        self.assertEqual(ok["filled"], 7)
+        bad = em._confidence(["a@b.example"], "Application: X", self._body("Notaname"),
+                             attachments=[__file__], signer=None)
+        self.assertIn("signature", bad["missing"])
+        self.assertEqual(bad["filled"], 6)
 
 class TestConfidenceArtifact(unittest.TestCase):
     """_finalize must persist confidence.json and keep it inside filled.json."""
