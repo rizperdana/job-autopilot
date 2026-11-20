@@ -303,15 +303,16 @@ def write_report(line, path=None):
 
 
 def run_batch(limit=5, attempts=None, max_submissions=None, dry=False, confirm_submit=False,
-              decisions=("apply",)):
+              decisions=("apply",), continue_on_wall=False):
     """Select -> prefill -> gate -> submit -> evidence, with hard batch stops.
 
     Returns a summary dict. `limit` bounds confirmed submissions; `attempts`
     bounds browser prefills (default 4x limit) so a live batch cannot walk the
     whole pool. `decisions` picks the gate bands to draw from ("apply" only by
     default; "review" is the ~1,875-job band the gates left to a human).
+    A captcha/auth wall stops the batch by default (`out["stopped"]`);
+    `continue_on_wall` only keeps a measurement run walking instead.
     """
-    attempts = max(int(limit) * 4, int(limit)) if attempts is None else int(attempts)
     cap, overridden = resolve_cap(max_submissions)
     cfg_cap = int(config.get("policy.max_submissions_per_day", 0))
     cfg_allow = config.allow_automated_submit()
@@ -350,7 +351,7 @@ def run_batch(limit=5, attempts=None, max_submissions=None, dry=False, confirm_s
     out = {"selected": len(candidates), "submitted": 0, "unconfirmed": 0, "refused": 0,
            "would_submit": 0, "dry": dry, "effective_cap": cap, "cap_overridden": overridden,
            "submissions_before": subs_today, "email_candidates": email_n, "stopped": None,
-           "attempts": 0, "allow_submit": allow_submit}
+           "attempts": 0, "allow_submit": allow_submit, "walls": 0}
     consecutive_unconfirmed = 0
 
     for i, job in enumerate(candidates, 1):
@@ -473,14 +474,19 @@ def run_batch(limit=5, attempts=None, max_submissions=None, dry=False, confirm_s
         else:
             consecutive_unconfirmed = 0
         if not allowed and is_wall(res):
+            out["walls"] += 1
+            if continue_on_wall:
+                # measurement run: a wall says nothing about the next page
+                print("    wall %d: continuing past %s" % (out["walls"], reason))
+                continue
             out["stopped"] = "page wall: " + str(reason)
             break
 
     if out["stopped"]:
         print("BATCH STOPPED: %s" % out["stopped"])
     print("batch-apply done: submitted=%d (confirmed) unconfirmed=%d refused=%d would_submit=%d "
-          "of %d attempts" % (out["submitted"], out["unconfirmed"], out["refused"],
-                              out["would_submit"], out["attempts"]))
+          "of %d attempts (walls=%d)" % (out["submitted"], out["unconfirmed"], out["refused"],
+                                         out["would_submit"], out["attempts"], out["walls"]))
     print("submission budget: %d used in this run, cap %d%s | email-channel jobs are drafts the "
           "candidate sends and are never counted as applications (%d waiting on `ja draft`)"
           % (out["submitted"], cap, " (override)" if overridden else "", email_n))

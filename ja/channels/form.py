@@ -136,6 +136,66 @@ def _duplicate(company, role, channel="form", exclude_application_id=None):
     except Exception:
         return False
 
+def _education_facts(cv):
+    """degree / school / discipline, verbatim from the CV's Education section.
+
+    The one shape this reads is "<degree>[, <discipline>] -- <school>[ (years)]",
+    e.g. cv.md's "- Bachelor Degree, Accounting -- Yogyakarta State University
+    (2016 - 2020)". Anything else -- a different order, several schools, a prose
+    paragraph -- yields nothing, so the field stays NEEDS_HUMAN instead of being
+    guessed at. The strings are copied out of the file as written.
+    """
+    m = re.search(r"^##\s+Education\s*$([\s\S]*?)(?=^##\s|\Z)", cv or "", re.M)
+    if not m:
+        return {}
+    body = [l.strip(" \t*-") for l in m.group(1).splitlines()]
+    body = [l for l in body if l]
+    if len(body) != 1:
+        return {}
+    line = re.sub(r"\s*\([^)]*\)\s*$", "", body[0]).strip()
+    m2 = re.fullmatch(r"(?P<degree>[^,()]+?)(?:,\s*(?P<discipline>[^,()]+?))?"
+                      r"\s*--\s*(?P<school>[^()]+?)\s*", line)
+    if not m2:
+        return {}
+    return {"degree": m2.group("degree").strip(),
+            "discipline": (m2.group("discipline") or "").strip() or None,
+            "school": m2.group("school").strip()}
+
+
+_BAND_OPTION = re.compile(r"^\s*\d+\s*(?:[-–]\s*\d+|\+)?\s*(?:years?|yrs?)\s*$", re.I)
+_PROSE_MARKERS = ("how ", "why ", "what ", "describe", "explain", "tell us",
+                  "elaborate", "please share", "please provide", "please describe",
+                  "please explain", "additional information", "process i agree")
+_YEARS_Q = re.compile(r"\b(years?|yrs?)\b", re.I)
+_YEARS_SUBJECT = re.compile(r"\bwith\b|\bin\b|\busing\b|\bof experience in\b", re.I)
+
+
+def _is_band_option(label):
+    """"0-1 year", "2-4 years", "10+ years" is a dropdown option, not a question."""
+    return bool(_BAND_OPTION.match(str(label or "")))
+
+
+def _looks_like_prose(label):
+    """A question we cannot answer from a file, however many keywords it shares."""
+    low = str(label or "").lower()
+    return any(m in low for m in _PROSE_MARKERS)
+
+
+def _is_total_years_question(label):
+    """True only for a question about TOTAL experience, never a per-skill one.
+
+    "Years of experience" / "how many years of professional experience" qualify;
+    "years of experience with Kubernetes" and "experience in software development"
+    name a subject, so they are refused rather than answered with the total.
+    """
+    low = str(label or "").lower()
+    if not _YEARS_Q.search(low) or "experience" not in low and "exp" not in low:
+        return False
+    if _is_band_option(low) or _YEARS_SUBJECT.search(low):
+        return False
+    return True
+
+
 def _profile_facts(profile):
     # tolerate a non-dict profile (e.g. caller passed config.profile() un-called):
     # facts become None -> map_fields yields NEEDS_HUMAN instead of crashing
@@ -154,6 +214,7 @@ def _profile_facts(profile):
     m = re.search(r"###\s+([^\n\-]+?)\s+--[^\n]*\n+[^\n]*\n(?:[^\n]*\n)*?([^\n]*Present)", cv)
     if m:
         current_company = m.group(1).strip()
+    edu = _education_facts(cv)
     return {
         "full_name": c.get("full_name"),
         "email": c.get("email"),
@@ -164,6 +225,9 @@ def _profile_facts(profile):
         "portfolio": c.get("portfolio_url"),
         "current_company": current_company,
         "years_experience": years,
+        "degree": edu.get("degree"),
+        "school": edu.get("school"),
+        "discipline": edu.get("discipline"),
         "work_authorized": "Indonesia" if (loc.get("country") == "Indonesia") else None,
         "needs_sponsorship": (profile.get("location") or {}).get("needs_sponsorship"),
         "salary": comp.get("target_range") or comp.get("minimum"),
@@ -262,11 +326,29 @@ def map_fields(fields, profile, answers=None):
             answer = facts["github"]
         elif any(w in haystack for w in ["portfolio", "website", "personal site"]):
             answer = facts["portfolio"]
-        elif "current company" in haystack or "current employer" in haystack:
-            answer = facts["current_company"] if facts["current_company"] is not None else NEEDS_HUMAN
-        elif "years" in haystack and ("experience" in haystack or "exp" in haystack):
+        # Total experience first: it is the one number the CV states outright.
+        # A per-skill variant ("... with Kubernetes") is refused, never answered
+        # with the total; a bare band option ("2-4 years") is a dropdown option
+        # whose question we never read, so it is refused too.
+        elif _is_total_years_question(haystack):
             ye = facts["years_experience"]
             answer = ye if ye is not None else NEEDS_HUMAN
+        elif _is_band_option(low):
+            answer = NEEDS_HUMAN
+        # Then the CV's own education line, used only where the label is a plain
+        # field name: a prose question that merely mentions school or a degree
+        # stays NEEDS_HUMAN. \bdegree\b deliberately does not match "Nanodegree".
+        elif not _looks_like_prose(low) and re.search(
+                r"\b(highest degree|degree|education level|education)\b", haystack):
+            answer = facts["degree"] if facts.get("degree") else NEEDS_HUMAN
+        elif not _looks_like_prose(low) and re.search(
+                r"\b(school|university|institution|college)\b", haystack):
+            answer = facts["school"] if facts.get("school") else NEEDS_HUMAN
+        elif not _looks_like_prose(low) and re.search(
+                r"\b(discipline|field of study|major)\b", haystack):
+            answer = facts["discipline"] if facts.get("discipline") else NEEDS_HUMAN
+        elif "current company" in haystack or "current employer" in haystack:
+            answer = facts["current_company"] if facts["current_company"] is not None else NEEDS_HUMAN
         elif any(w in haystack for w in ["work author", "authorized to work", "eligib", "right to work", "legally"]):
             answer = "Yes" if facts["work_authorized"] else NEEDS_HUMAN
         elif any(w in haystack for w in ["sponsorship", "visa sponsor", "require sponsor"]):
@@ -349,7 +431,69 @@ def _human_label(label, key, source=None):
         return "Unnamed field %s" % m.group(1)
     return str(key or "")
 
-def _confidence(req_flags, mapping, fields, uploaded, channel="form"):
+def _norm_text(v):
+    """lowercase, punctuation -> space: for option-text comparison."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(v or "").lower())).strip()
+
+
+def _tokens(v):
+    return [t for t in _norm_text(v).split() if len(t) > 1]
+
+
+def _covers(tokens, tok):
+    """Any one word of `tokens` is `tok`, or the 4+-char prefix of it."""
+    return any(tok == t or (len(tok) >= 4 and (t.startswith(tok) or tok.startswith(t))) for t in tokens)
+
+
+def _text_matches(want, got):
+    """True when both sides are the same words, allowing a 4+-char prefix per word
+    ("Bachelor Degree" == "Bachelor's Degree" == "bachelors_degree"). An option
+    naming more than the value does -- "Bachelor of Science in Accounting" for a
+    plain "Bachelor Degree" -- is refused, not guessed at.
+    """
+    w, g = _tokens(want), _tokens(got)
+    if not w or not g:
+        return False
+    return (all(_covers(w, t) for t in g) and all(_covers(g, t) for t in w))
+
+
+def _select_option(page, sel, value):
+    """Set a <select> to the option whose own text is the mapped value.
+
+    Matched against option text (and its value attribute), never by index: a
+    select that offers no matching option stays unanswered and is reported.
+    Returns the option text it chose, or None.
+    """
+    if not str(value or "").strip():
+        return None
+    try:
+        opts = page.eval_on_selector_all(
+            "%s option" % sel,
+            "els => els.map(o => [(o.textContent || '').trim(), o.getAttribute('value') || ''])")
+    except Exception:
+        return None
+    for text, attr in opts or []:
+        if _text_matches(value, text) or _text_matches(value, attr):
+            return text
+    return None
+
+
+def _file_uploaded(f, uploaded, uploaded_keys=None):
+    """Did THIS file input receive a file?
+
+    With the uploaded keys known, a second, still-empty box (a cover letter the
+    page requires) is not credited by the resume upload. Without them -- or for a
+    box with no name/id, which no key can name -- the single global flag speaks.
+    """
+    if uploaded_keys:
+        key = str(f.get("name") or f.get("id") or "")
+        if not key:
+            return bool(uploaded)
+        return key in uploaded_keys
+    return bool(uploaded)
+
+
+def _confidence(req_flags, mapping, fields, uploaded, uploaded_keys=None, channel="form"):
     """Pure: per-field confidence averaged over the fields the page exposes.
 
     Rubric, one row per attributable field:
@@ -383,7 +527,7 @@ def _confidence(req_flags, mapping, fields, uploaded, channel="form"):
         label = _human_label(rf.get("label"), key, rf.get("label_source"))
         if (rf.get("type") or "").lower() == "file":
             total += 1
-            if uploaded:
+            if _file_uploaded(rf, uploaded, uploaded_keys):
                 filled += 1
             else:
                 missing.append(label)
@@ -419,7 +563,7 @@ def _confidence(req_flags, mapping, fields, uploaded, channel="form"):
         ftype = (f.get("type") or "").lower() or "text"
         required = key in req_keys or fallback
         value = mapping.get(key)
-        if ftype == "file" and uploaded:
+        if ftype == "file" and _file_uploaded(f, uploaded, uploaded_keys):
             score, state = 100, "uploaded"
         elif _has_real_value(value):
             hay = " ".join(str(f.get(k) or "") for k in ("label", "name", "id", "placeholder")).lower()
@@ -518,7 +662,7 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
         "actions": [],
         # nothing measured yet: early returns (blacklist/duplicate/dead posting)
         # keep this shape so the key is always present, with pct null.
-        "confidence": _confidence([], {}, [], False, "form"),
+        "confidence": _confidence([], {}, [], False, channel="form"),
         "artifacts": {},
     }
 
@@ -683,19 +827,102 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
                 elif f.get("name"):
                     sel = '[name="%s"]' % str(f["name"]).replace("\\", "\\\\").replace('"', '\\"')
                 if sel:
+                    if str(val) and (f.get("type") or "").lower().startswith("select"):
+                        # a select accepts one of its own options only: choose by
+                        # option text, never by index, and refuse if none matches
+                        picked = _select_option(page, sel, val)
+                        if picked is None:
+                            result["needs_human"].append(
+                                {"field": key, "label": f.get("label", ""),
+                                 "error": "no option matches %r" % str(val)[:40]})
+                            continue
+                        page.select_option(sel, label=picked)
+                        result["actions"].append({"action": "select", "selector": sel,
+                                                  "value": picked[:40]})
+                        continue
                     page.fill(sel, str(val))
                     result["actions"].append({"action": "fill", "selector": sel, "value": str(val)[:40]})
             except Exception as e:
                 result["needs_human"].append({"field": key, "label": f.get("label", ""), "error": str(e)})
 
-        # CV upload
-        file_input = page.query_selector("input[type='file']")
-        if file_input is not None and cv is not None:
+        # CV upload: attach to the box the page wants a resume in, not merely the
+        # first one. Pages ship a *second* file input for a cover letter, and the
+        # resume must never land there. Scoring reads the same label ladder the
+        # discovery passes use; a box labelled as a cover letter never wins.
+        file_inputs = []
+        try:
+            file_inputs = page.query_selector_all("input[type='file']")
+        except Exception:
+            file_inputs = []
+        upload_target = None
+        if file_inputs:
             try:
-                file_input.set_input_files(str(cv))
-                result["actions"].append({"action": "upload", "path": str(cv)})
-            except Exception as e:
-                result["needs_human"].append({"field": "cv_upload", "error": str(e)})
+                upload_target = page.evaluate("""() => {
+                    %s
+                    const rank = (t) => {
+                        t = (t || '').toLowerCase();
+                        if (/cover\\s*letter|motivation/.test(t)) return -1;
+                        if (/resume|curriculum|\\bcv\\b/.test(t)) return 3;
+                        if (/attach|upload/.test(t)) return 2;
+                        return 0;
+                    };
+                    const ins = [...document.querySelectorAll("input[type='file']")];
+                    let best = null, bestRank = -1;
+                    ins.forEach((n, i) => {
+                        const extra = n.getAttribute('aria-label') || n.getAttribute('title') || '';
+                        // empty text must not score 0 and mask a cover-letter label
+                        const texts = [ladder(n)[0], extra].filter(Boolean);
+                        const r = texts.length ? Math.max.apply(null, texts.map(rank)) : 0;
+                        if (r >= 0 && r > bestRank) { bestRank = r; best = i; }
+                    });
+                    if (best === null) return null;
+                    const n = ins[best];
+                    return {index: best, label: ladder(n)[0] || '',
+                            name: n.name || n.id || '', count: ins.length};
+                }""" % _LADDER_JS)
+            except Exception:
+                upload_target = None
+        credited_keys = set()
+        if cv is not None and file_inputs:
+            idx = (upload_target or {}).get("index")
+            el = file_inputs[idx] if isinstance(idx, int) and 0 <= idx < len(file_inputs) else None
+            if upload_target is None:
+                result["needs_human"].append(
+                    {"field": "cv_upload", "label": "file input",
+                     "error": "every file input on this page is for a cover letter"})
+            elif el is None:
+                result["needs_human"].append({"field": "cv_upload",
+                                              "error": "no file input to attach the CV to"})
+            else:
+                try:
+                    el.set_input_files(str(cv))
+                    result["actions"].append({"action": "upload", "path": str(cv),
+                                              "input_index": idx,
+                                              "label": upload_target.get("label", "")})
+                    if upload_target.get("name"):
+                        credited_keys.add(upload_target["name"])
+                    # the discovery pass lists the same controls in document order, so the
+                    # i-th file input is the i-th file row -- which names ((or fails to
+                    # name) the very box we just filled, phantom "needs a human" included
+                    file_rows = [f for f in (fields or [])
+                                 if str(f.get("type") or "").lower() == "file"]
+                    if isinstance(idx, int) and 0 <= idx < len(file_rows):
+                        f0 = file_rows[idx]
+                        credited_keys.add(f0.get("name") or f0.get("id")
+                                          or ("field_%d" % (fields or []).index(f0)))
+                except Exception as e:
+                    result["needs_human"].append({"field": "cv_upload", "error": str(e)})
+            # map_fields has no answer branch for a file input, so a box we just
+            # filled is still listed as "needs a human": drop that bookkeeping row.
+            # Rows carrying an error, and boxes we did not fill, stay.
+            for nh in list(result["needs_human"]):
+                if nh.get("error") is None and str(nh.get("field")) in credited_keys:
+                    result["needs_human"].remove(nh)
+            # same lie in the filled map: the box is filled, so say so
+            for k in list(result.get("filled") or {}):
+                if k in credited_keys and result["filled"].get(k) == NEEDS_HUMAN:
+                    result["filled"][k] = "[cv uploaded]"
+        uploaded_keys = credited_keys or None
 
         # required-but-unanswered gate: a REQUIRED field left NEEDS_HUMAN blocks
         # submission (never invent). A field is required when its label carries a
@@ -725,14 +952,15 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
         seen_keys = {f.get("name") or f.get("id") or ("f%d" % i) for i, f in enumerate(fields)}
         uploaded = any(isinstance(a, dict) and a.get("action") == "upload" for a in result["actions"])
         for rf in req_flags or []:
-            if (rf.get("type") or "") == "file" and uploaded:
+            if (rf.get("type") or "") == "file" and _file_uploaded(rf, uploaded, uploaded_keys or None):
                 continue
             k = rf.get("name")
             if k in seen_keys and mapping.get(k) == NEEDS_HUMAN:
                 required_missing.append(rf.get("label") or k)
 
         # confidence in what we filled: page's own required fields (upload counts)
-        result["confidence"] = _confidence(req_flags, mapping, fields, uploaded, "form")
+        result["confidence"] = _confidence(req_flags, mapping, fields, uploaded,
+                                           uploaded_keys or None, "form")
         log("confidence", **{k: v for k, v in result["confidence"].items()
                              if k not in ("missing", "fields")})
 

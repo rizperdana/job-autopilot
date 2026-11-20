@@ -542,3 +542,120 @@ class TestLabelSource(unittest.TestCase):
         self.assertEqual(row["label_source"], "legend")
         self.assertEqual(row["label"], "Which middleware?")
 
+
+
+class TestEducationFacts(unittest.TestCase):
+    """degree/school/discipline are read out of the CV's Education line, verbatim."""
+
+    def test_the_real_cv_line_yields_the_three_strings(self):
+        cv = ("## Experience\n- x\n\n## Education\n"
+              "- Bachelor Degree, Accounting -- Yogyakarta State University (2016 - 2020)\n\n## Skills\n- y\n")
+        self.assertEqual(form._education_facts(cv),
+                         {"degree": "Bachelor Degree", "discipline": "Accounting",
+                          "school": "Yogyakarta State University"})
+
+    def test_a_degree_without_a_discipline(self):
+        edu = form._education_facts("## Education\n- Master Degree -- Some University (2019)\n")
+        self.assertEqual(edu["degree"], "Master Degree")
+        self.assertIsNone(edu["discipline"])
+        self.assertEqual(edu["school"], "Some University")
+
+    def test_two_schools_or_prose_yield_nothing(self):
+        self.assertEqual(form._education_facts("## Education\n- A -- B\n- C -- D\n"), {})
+        self.assertEqual(form._education_facts("## Education\nI studied accounting.\n"), {})
+        self.assertEqual(form._education_facts("## Experience\n- x\n"), {})
+
+    def test_the_facts_carry_the_three_keys(self):
+        facts = form._profile_facts({})
+        self.assertIn("degree", facts)
+        self.assertIn("school", facts)
+        self.assertIn("discipline", facts)
+
+
+class TestEducationMapping(unittest.TestCase):
+    def setUp(self):
+        self.facts = form._profile_facts({})
+        self.has_edu = bool(self.facts.get("degree"))
+
+    def _map(self, label, name="f"):
+        return form.map_fields([{"label": label, "name": name}], {}, {})[name]
+
+    def test_degree_school_discipline_map_verbatim(self):
+        if not self.has_edu:
+            self.skipTest("no parseable Education section in cv.md on this machine")
+        self.assertEqual(self._map("Degree*"), self.facts["degree"])
+        self.assertEqual(self._map("School"), self.facts["school"])
+        self.assertEqual(self._map("Discipline"), self.facts["discipline"])
+        self.assertEqual(self._map("Field of study"), self.facts["discipline"])
+
+    def test_a_nanodegree_is_not_a_degree(self):
+        self.assertEqual(self._map("Please choose the Nanodegree from the below dropdown"),
+                         form.NEEDS_HUMAN)
+
+    def test_prose_questions_stay_unanswered(self):
+        for q in ("How did you perform in mathematics at high school?",
+                  "Please share your rationale or evidence for the highest degree",
+                  "What university did you attend?"):
+            self.assertEqual(self._map(q), form.NEEDS_HUMAN, q)
+
+
+class TestTotalYearsGate(unittest.TestCase):
+    def _map(self, label, name="f"):
+        return form.map_fields([{"label": label, "name": name}], {}, {})[name]
+
+    def test_total_experience_uses_the_cv_number(self):
+        # 8 on this machine; NEEDS_HUMAN when cv.md is missing
+        for label in ("Years of experience", "How many years of professional experience do you have?"):
+            self.assertIn(self._map(label), ("8", form.NEEDS_HUMAN), label)
+
+    def test_per_skill_questions_and_band_options_are_refused(self):
+        for label in ("Years of experience with Kubernetes",
+                      "Years of experience in software development",
+                      "2-4 years", "10+ years", "0-1 year"):
+            self.assertEqual(self._map(label), form.NEEDS_HUMAN, label)
+
+
+class TestFileInputCrediting(unittest.TestCase):
+    def test_a_second_required_box_is_not_credited_by_the_resume(self):
+        reqs = [{"name": "resume", "label": "Resume", "type": "file"},
+                {"name": "cover_letter", "label": "Cover letter", "type": "file"}]
+        c = form._confidence(reqs, {}, [], True, {"resume"})
+        self.assertEqual(c["missing"], ["Cover letter"])
+        self.assertEqual(c["pct"], 50)
+        self.assertEqual(form._confidence(reqs, {}, [], True, {"resume", "cover_letter"})["pct"], 100)
+
+    def test_without_keys_the_single_flag_still_speaks(self):
+        reqs = [{"name": "resume", "label": "Resume", "type": "file"}]
+        self.assertEqual(form._confidence(reqs, {}, [], True)["pct"], 100)
+        self.assertEqual(form._confidence(reqs, {}, [], False)["pct"], 0)
+
+    def test_an_unnameable_box_falls_back_to_the_flag(self):
+        self.assertTrue(form._file_uploaded({"label": "Resume"}, True, {"resume"}))
+        # with keys known, membership decides -- the stale global flag cannot
+        self.assertFalse(form._file_uploaded({"name": "cover_letter"}, True, {"resume"}))
+        self.assertTrue(form._file_uploaded({"name": "resume"}, True, {"resume"}))
+        self.assertTrue(form._file_uploaded({"name": "resume"}, True, None))
+
+
+class TestSelectOptionMatch(unittest.TestCase):
+    class _Page:
+        def __init__(self, opts):
+            self.opts = opts
+
+        def eval_on_selector_all(self, sel, js):
+            return self.opts
+
+    def test_option_text_is_matched_word_by_word(self):
+        self.assertTrue(form._text_matches("Bachelor Degree", "Bachelor's Degree"))
+        self.assertFalse(form._text_matches("Bachelor Degree", "Master Degree"))
+        self.assertFalse(form._text_matches("Bachelor Degree", ""))
+
+    def test_select_picks_the_matching_option_and_refuses_otherwise(self):
+        p = self._Page([("Bachelor's Degree", "bachelor"), ("Master's Degree", "master")])
+        self.assertEqual(form._select_option(p, "#d", "Bachelor Degree"), "Bachelor's Degree")
+        self.assertIsNone(form._select_option(p, "#d", "Doctorate"))
+        self.assertIsNone(form._select_option(p, "#d", ""))
+
+    def test_option_value_attribute_is_also_accepted(self):
+        p = self._Page([("Pick one", "bachelors_degree")])
+        self.assertEqual(form._select_option(p, "#d", "Bachelor Degree"), "Pick one")

@@ -232,7 +232,8 @@ def cmd_batch_apply(args):
                           max_submissions=getattr(args, "max_submissions", None),
                           dry=_dry(args),
                           confirm_submit=bool(getattr(args, "confirm_submit", False)),
-                          decisions=decisions)
+                          decisions=decisions,
+                          continue_on_wall=bool(getattr(args, "keep_going_wall", False)))
 
 
 def cmd_status(args):
@@ -299,6 +300,9 @@ def main():
     p.add_argument("--confirm-submit", action="store_true")
     p.add_argument("--decision", default="apply",
                    help="gate decisions to draw from, comma separated (default: apply)")
+    p.add_argument("--keep-going-wall", action="store_true",
+                   help="measurement runs: keep walking past a captcha/auth wall instead of "
+                        "stopping the batch (never changes what may be submitted)")
     p = add("loop", cmd_loop)
     p.add_argument("--limit", type=int, default=5)
     p = add("status", cmd_status)

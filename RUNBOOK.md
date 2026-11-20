@@ -17,6 +17,9 @@ Run in order:
   Never submits without `--confirm-submit`, and never past the submission cap (config default 0 = refuse
   everything; the per-run `--max-submissions` override is reported). Email-channel jobs are drafts the
   candidate sends, never counted here.
+  A captcha/auth wall stops the batch at that page; for a measurement sweep
+  (`--dry-run --keep-going-wall`) it walks on instead — the flag only changes whether the loop breaks,
+  never what may be submitted.
 6. `python3 -m ja sync` — sync applications into career-ops (`batch/tracker-additions/*.tsv`).
 7. `python3 -m ja report` — weekly markdown dashboard.
 Expected output: funnel counts per step; artifacts land under `~/.job-autopilot/runs/<date>/` and
@@ -38,6 +41,19 @@ Expected output: funnel counts per step; artifacts land under `~/.job-autopilot/
   `confidence.json` with `label_source: "placeholder"` and reads "(placeholder only)", and
   `confidence.placeholder_only` counts them. A required control with no name, no id and no readable
   question text is counted in `unresolved_required`, never scored and never blocking.
+- Class (a) facts beyond contact details are read out of the candidate's own files, verbatim:
+  total years from the CV prose ("… with 8 years") and degree / school / discipline from the one
+  `## Education` line (`- Bachelor Degree, Accounting -- Yogyakarta State University (2016 - 2020)`).
+  The same line in another shape yields nothing. Refused on purpose: a per-skill years question
+  ("… with Kubernetes"), a bare dropdown option ("2-4 years", "10+ years"), "Nanodegree", and any
+  prose question mentioning school or degree -- those stay `NEEDS_HUMAN`.
+- A `<select>` is filled by option text, never by index: the mapped value is compared word by word
+  (a 4+-char prefix counts, so "Bachelor Degree" matches "Bachelor's Degree") and an option naming
+  more than the value is refused. No option matches -> the field is reported, not guessed.
+- The CV is uploaded to the file input the page wants for a resume, not merely the first one: each
+  box is scored by its ladder label, a box labelled as a cover letter never wins, and a page whose
+  only file boxes are cover letters gets no upload. A second, still-empty required file box is not
+  credited by the resume upload, and a file input we did fill is no longer listed as needing a human.
 - Solve captcha yourself if the solver fails or attempts exceed 3; then click Submit.
 
 ## 4. Recording outcomes
