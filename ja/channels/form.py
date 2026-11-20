@@ -259,21 +259,48 @@ def _has_real_value(value):
     v = str(value).strip()
     return bool(v) and v != NEEDS_HUMAN
 
-def _confidence(req_flags, mapping, fields, uploaded, channel="form"):
-    """Pure: how much of the page's data we are confident about, as a percentage.
+def _human_label(label, key):
+    """A label a human can act on: never a bare synthetic key like f8."""
+    label = (label or "").strip()
+    if label:
+        return label
+    m = re.fullmatch(r"f(\d+)", str(key or ""))
+    if m:
+        return "Unnamed field %s" % m.group(1)
+    return str(key or "")
 
-    Denominator is the page's own required fields (file inputs count as filled
-    only when an upload really happened); with no required flags at all it falls
-    back to every discovered field. Nothing to measure -> pct is None, never 0/100.
+def _confidence(req_flags, mapping, fields, uploaded, channel="form"):
+    """Pure: per-field confidence averaged over the fields the page exposes.
+
+    Rubric, one row per attributable field:
+      file input that really uploaded           -> 100 (state uploaded)
+      real mapped value the shape check accepts -> 100 (state filled)
+      real mapped value the shape check rejects ->  50 (state partial)
+      required and no real value                ->   0 (state missing)
+      optional and empty                        -> excluded, counted in skipped_optional
+      required but unattributable (no name/id)  -> excluded, counted in unresolved_required
+    pct is the rounded mean of the included scores; None when nothing is scoreable.
+    total/filled/missing cover only required fields we can attribute and address, so
+    an element the page never names can neither deflate pct nor look actionable.
+    Values never enter this dict: it lands in confidence.json, not the answers file.
     """
     mapping = mapping if isinstance(mapping, dict) else {}
     req_flags = [r for r in (req_flags or []) if isinstance(r, dict)]
     fields = [f for f in (fields or []) if isinstance(f, dict)]
-    total = filled = 0
+    identified = {(f.get("name") or f.get("id") or "") for f in fields}
+    identified.discard("")
+    total = filled = unresolved = 0
     missing = []
+    req_keys = set()
     for rf in req_flags:
-        key = rf.get("name")
-        label = (rf.get("label") or "").strip() or str(key or "")
+        key = rf.get("name") or rf.get("id") or ""
+        # no name/id, or a key the discovery pass never saw: we cannot say which
+        # field this is, so it must not be scored (never a fabricated 0).
+        if rf.get("synthetic") or not key or (identified and key not in identified):
+            unresolved += 1
+            continue
+        req_keys.add(key)
+        label = _human_label(rf.get("label"), key)
         if (rf.get("type") or "").lower() == "file":
             total += 1
             if uploaded:
@@ -287,23 +314,55 @@ def _confidence(req_flags, mapping, fields, uploaded, channel="form"):
         else:
             missing.append(label)
     method = "required-fields"
+    fallback = False
     if total == 0 and fields:
         method = "discovered-fields"
+        fallback = True  # the page declared nothing required: measure all it exposes
         for i, f in enumerate(fields):
             key = f.get("name") or f.get("id") or "field_%d" % i
-            label = (f.get("label") or "").strip() or str(key)
+            label = _human_label(f.get("label"), key)
             total += 1
             if _has_real_value(mapping.get(key)):
                 filled += 1
             else:
                 missing.append(label)
+
+    rows, scores, skipped = [], [], 0
+    seen = set()
+    scored_flags = [r for r in req_flags if (r.get("name") or r.get("id") or "") in req_keys]
+    for i, f in enumerate(fields + scored_flags):
+        key = f.get("name") or f.get("id") or "field_%d" % i
+        if key in seen:
+            continue
+        seen.add(key)
+        label = _human_label(f.get("label"), key)
+        ftype = (f.get("type") or "").lower() or "text"
+        required = key in req_keys or fallback
+        value = mapping.get(key)
+        if ftype == "file" and uploaded:
+            score, state = 100, "uploaded"
+        elif _has_real_value(value):
+            hay = " ".join(str(f.get(k) or "") for k in ("label", "name", "id", "placeholder")).lower()
+            ok, _ = _shape_ok(hay, value)
+            score, state = (100, "filled") if ok else (50, "partial")
+        elif required:
+            score, state = 0, "missing"
+        else:
+            skipped += 1
+            continue
+        rows.append({"label": label, "name": str(key), "type": ftype,
+                     "required": bool(required), "score": score, "state": state})
+        scores.append(score)
     return {
-        "pct": None if total == 0 else int(round(100.0 * filled / total)),
+        "pct": int(round(sum(scores) / float(len(scores)))) if scores else None,
         "method": method,
         "total": total,
         "filled": filled,
         "missing": missing[:8],
         "channel": channel,
+        "fields": rows,
+        "skipped_optional": skipped,
+        "unresolved_required": unresolved,
     }
 
 def _resolve_cv(attach=None):
@@ -452,6 +511,9 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
                 const nodes = document.querySelectorAll('input, textarea, select');
                 nodes.forEach((n, i) => {
                     if (n.type === 'hidden' || n.type === 'submit' || n.type === 'button' || n.type === 'search') return;
+                    // no name and no id: nothing can address it again (react-select's
+                    // requiredInput mirror, tracking inputs). Not a fillable field.
+                    if (!n.name && !n.id) return;
                     let label = '';
                     if (n.id) {
                         const l = document.querySelector('label[for=\"' + n.id + '\"]');
@@ -560,7 +622,10 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
                     if (!label) label = n.getAttribute('aria-label') || n.name || '';
                     const required = n.required || n.getAttribute('aria-required') === 'true'
                         || /\\*|required/i.test(label);
-                    if (required) out.push({name: n.name || n.id || ('f'+i), label: label, type: (n.type || '').toLowerCase()});
+                    // synthetic: no name/id, so the score treats it as unattributable
+                    // instead of scoring a field nobody can point at.
+                    if (required) out.push({name: n.name || n.id || ('f'+i), label: label,
+                        type: (n.type || '').toLowerCase(), synthetic: !(n.name || n.id)});
                 });
                 return out;
             }""")
@@ -577,7 +642,8 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
 
         # confidence in what we filled: page's own required fields (upload counts)
         result["confidence"] = _confidence(req_flags, mapping, fields, uploaded, "form")
-        log("confidence", **{k: v for k, v in result["confidence"].items() if k != "missing"})
+        log("confidence", **{k: v for k, v in result["confidence"].items()
+                             if k not in ("missing", "fields")})
 
         if required_missing:
             result["submit_blocked_reason"] = "missing required: " + "; ".join(required_missing[:8])

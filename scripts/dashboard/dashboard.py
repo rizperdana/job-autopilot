@@ -505,6 +505,15 @@ tbody tr.selected{background:var(--color-selected)}
 .conf-none{margin:0;font-size:13px;color:var(--color-muted)}
 .conf-meta{margin:var(--space-xs) 0 0;font-size:12px;color:var(--color-ink-2)}
 .conf-list{margin:var(--space-2xs) 0 0;padding-inline-start:var(--space-md);font-size:13px}
+.conf-fields{margin:var(--space-xs) 0 0;padding:0;list-style:none;font-size:13px}
+.conf-field{display:flex;align-items:baseline;gap:var(--space-xs);padding:var(--space-2xs) 0 var(--space-2xs) var(--space-xs);border-top:1px solid var(--color-rule);border-inline-start:2px solid transparent}
+.conf-field-label{flex:1;min-width:0;overflow-wrap:break-word}
+.conf-field-state{color:var(--color-muted);font-size:12px}
+.conf-field-score{font-variant-numeric:tabular-nums;font-weight:600}
+.conf-field.miss{border-inline-start-color:var(--color-bad)}
+.conf-field.miss .conf-field-score{color:var(--color-bad)}
+.conf-field.partial{border-inline-start-color:var(--color-warn)}
+.conf-field.partial .conf-field-score{color:var(--color-warn-ink)}
 .qcard{padding:var(--space-sm) 0;border-top:1px solid var(--color-rule)}
 .qcard.needs{border-top-color:var(--color-bad)}
 .q-label{margin:0;font-size:14px;font-weight:600}
@@ -632,12 +641,32 @@ function confPill(c){
   const t=confText(c);
   return '<span class="conf-pill '+confTone(p)+'" title="'+esc(t)+'" aria-label="Confidence '+p+' percent. '+esc(t)+'">'+p+'%<span class="conf-bar" aria-hidden="true"><span style="width:'+p+'%"></span></span></span>';
 }
+function confFieldRow(f){
+  const s=Math.round(Number(f.score));
+  const ok=isFinite(s);
+  const cls=!ok?'':(s>=100?'':(s>=50?'partial':'miss'));
+  const label=String(f.label||'');
+  // artifacts written before the identity filter carry bare fNN keys
+  const shown=/^f\d+$/.test(label)?('Unnamed field '+label.slice(1)):(label||String(f.name||''));
+  return '<li class="conf-field '+cls+'"><span class="conf-field-label">'+esc(shown)+'</span>'
+    +'<span class="conf-field-state">'+esc(String(f.state||''))+'</span>'
+    +'<span class="conf-field-score">'+(ok?s+'%':'')+'</span></li>';
+}
 function confSummary(c){
   const p=confPct(c);
   if(p==null) return '<div class="conf"><p class="conf-none">No confidence data for this application. A run writes confidence.json or a confidence block in filled.json; neither is here.</p></div>';
   const missing=(c.missing||[]).filter(m=>m!=null&&m!=='');
   let h='<div class="conf"><div class="conf-head '+confTone(p)+'"><span class="conf-pct">'+p+'%</span><span class="conf-bar" aria-hidden="true"><span style="width:'+p+'%"></span></span></div>'
     +'<p class="conf-meta">'+esc(confText(c))+(c.channel?' Read from the '+esc(c.channel)+' channel.':'')+'</p>';
+  const fields=Array.isArray(c.fields)?c.fields:[];
+  if(fields.length){
+    h+='<p class="conf-meta">Per field. 0 is a required field we left blank; 50 is typed but not verified against the page\u2019s own constraints.</p>'
+      +'<ul class="conf-fields">'+fields.map(confFieldRow).join('')+'</ul>';
+    const sk=Number(c.skipped_optional)||0;
+    if(sk) h+='<p class="conf-meta">'+sk+' optional '+(sk===1?'field':'fields')+' left blank, kept out of the average.</p>';
+  }
+  const unr=Number(c.unresolved_required)||0;
+  if(unr) h+='<p class="conf-meta">'+unr+' required '+(unr===1?'element':'elements')+' on this page carry no name or id, so they are left out of the average and nobody can be sent to fill them.</p>';
   if(missing.length){
     h+='<p class="conf-meta">Not filled from the profile:</p><ul class="conf-list">'+missing.slice(0,8).map(m=>'<li>'+esc(m)+'</li>').join('')+'</ul>';
     if(missing.length>8) h+='<p class="conf-meta">and '+(missing.length-8)+' more.</p>';

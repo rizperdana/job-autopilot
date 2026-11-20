@@ -299,10 +299,100 @@ class TestConfidence(unittest.TestCase):
         self.assertEqual(c["pct"], 50)
         self.assertEqual(c["missing"], ["Resume"])
 
-    def test_missing_labels_fall_back_to_name_and_cap_at_8(self):
+    def test_missing_labels_fall_back_to_a_human_string_and_cap_at_8(self):
         reqs = [{"name": "f%d" % i, "label": ""} for i in range(10)]
         c = form._confidence(reqs, {}, [], False)
-        self.assertEqual(c["missing"], ["f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7"])
+        self.assertEqual(c["missing"], ["Unnamed field %d" % i for i in range(8)])
+        # no discovery pass at all: nothing claims these are unattributable
+        self.assertEqual(c["unresolved_required"], 0)
+
+    def test_partial_value_present_but_shape_rejected_scores_50(self):
+        reqs = [{"name": "email", "label": "Email", "type": "email"},
+                {"name": "city", "label": "City", "type": "text"}]
+        c = form._confidence(reqs, {"email": "not-an-email", "city": "Jakarta"}, [], False)
+        self.assertEqual([r["score"] for r in c["fields"]], [50, 100])
+        self.assertEqual([r["state"] for r in c["fields"]], ["partial", "filled"])
+        self.assertEqual(c["pct"], 75)
+
+    def test_required_and_empty_scores_zero(self):
+        reqs = [{"name": "email", "label": "Email", "type": "email"},
+                {"name": "phone", "label": "Phone", "type": "text"}]
+        c = form._confidence(reqs, {"email": "a@b.example"}, [], False)
+        self.assertEqual(c["pct"], 50)
+        self.assertEqual(c["fields"][1], {"label": "Phone", "name": "phone", "type": "text",
+                                          "required": True, "score": 0, "state": "missing"})
+        self.assertEqual(c["skipped_optional"], 0)
+
+    def test_optional_empty_is_excluded_from_both_sides(self):
+        reqs = [{"name": "email", "label": "Email", "type": "email"}]
+        fields = reqs + [{"name": "referrer", "label": "How did you hear about us?"}]
+        c = form._confidence(reqs, {"email": "a@b.example"}, fields, False)
+        self.assertEqual(c["pct"], 100)          # denominator is the 1 filled field, not 2
+        self.assertEqual(c["skipped_optional"], 1)
+        self.assertEqual([r["name"] for r in c["fields"]], ["email"])
+
+    def test_optional_filled_is_included_at_100(self):
+        reqs = [{"name": "email", "label": "Email", "type": "email"}]
+        fields = reqs + [{"name": "referrer", "label": "Referrer"}]
+        c = form._confidence(reqs, {"email": "a@b.example", "referrer": "LinkedIn"}, fields, False)
+        self.assertEqual([r["score"] for r in c["fields"]], [100, 100])
+        self.assertEqual(c["skipped_optional"], 0)
+
+    def test_mean_over_a_mixed_list(self):
+        reqs = [{"name": "email", "label": "Email", "type": "email"},
+                {"name": "years", "label": "Years of experience", "type": "text"},
+                {"name": "cov", "label": "Cover letter", "type": "textarea"}]
+        fields = reqs + [{"name": "referrer", "label": "Referrer"}]
+        c = form._confidence(reqs, {"email": "a@b.example", "years": "eight"}, fields, False)
+        self.assertEqual([r["score"] for r in c["fields"]], [100, 50, 0])  # referrer skipped
+        self.assertEqual(c["pct"], 50)            # (100 + 50 + 0) / 3
+        self.assertEqual(c["total"], 3)           # legacy required-only meaning kept
+        self.assertEqual(c["filled"], 2)
+        self.assertEqual(c["skipped_optional"], 1)
+
+    def test_result_keeps_legacy_keys_and_carries_no_values(self):
+        c = form._confidence([{"name": "email", "label": "Email"}],
+                             {"email": "a@b.example"}, [], False)
+        for k in ("pct", "method", "total", "filled", "missing", "channel",
+                  "fields", "skipped_optional", "unresolved_required"):
+            self.assertIn(k, c)
+        self.assertEqual(sorted(c["fields"][0]),
+                         ["label", "name", "required", "score", "state", "type"])
+
+    def test_discovered_fallback_marks_exposed_fields_required(self):
+        fields = [{"name": n, "label": n.upper()} for n in ("a", "b", "c", "d")]
+        c = form._confidence([], {"a": "x"}, fields, False)
+        self.assertEqual(c["method"], "discovered-fields")
+        self.assertTrue(all(r["required"] for r in c["fields"]))
+        self.assertEqual(c["skipped_optional"], 0)
+        self.assertEqual(c["pct"], 25)            # 1 of 4
+
+    def test_unattributable_required_is_excluded_and_counted(self):
+        # react-select keeps a nameless/idless mirror input to satisfy native
+        # validation; the discovery pass never sees it (no identity to address),
+        # so it must not be scored as a field we failed to fill.
+        reqs = [{"name": "email", "label": "Email", "type": "email"},
+                {"name": "f8", "label": "", "type": "text", "synthetic": True}]
+        c = form._confidence(reqs, {"email": "a@b.example"}, [], False)
+        self.assertEqual(c["pct"], 100)          # not dragged down by a fabricated 0
+        self.assertEqual(c["unresolved_required"], 1)
+        self.assertEqual(c["total"], 1)
+        self.assertEqual(c["missing"], [])
+        self.assertEqual([r["name"] for r in c["fields"]], ["email"])
+
+    def test_required_key_absent_from_discovered_fields_is_unresolved(self):
+        fields = [{"name": "email", "label": "Email"}]
+        reqs = [{"name": "email", "label": "Email", "type": "email"},
+                {"name": "ghost", "label": "Ghost", "type": "text"}]
+        c = form._confidence(reqs, {"email": "a@b.example"}, fields, False)
+        self.assertEqual(c["pct"], 100)
+        self.assertEqual(c["unresolved_required"], 1)
+        self.assertEqual([r["name"] for r in c["fields"]], ["email"])
+
+    def test_synthetic_key_never_renders_as_a_label(self):
+        self.assertEqual(form._human_label("", "f8"), "Unnamed field 8")
+        self.assertEqual(form._human_label("", "email"), "email")
+        self.assertEqual(form._human_label("  First Name*  ", "first_name"), "First Name*")
 
 
 class TestEmailConfidence(unittest.TestCase):
@@ -333,6 +423,21 @@ class TestEmailConfidence(unittest.TestCase):
         self.assertEqual(c["missing"], ["recipient", "subject", "opener",
                                         "CV attached line", "signature",
                                         "CV file on disk", "body length"])
+
+    def test_fields_rows_mirror_the_facts(self):
+        from ja.channels import email as em
+        c = em._confidence(["a@b.example"], "Application: X", self._body(),
+                           attachments=[__file__], signer="Test Candidate")
+        self.assertEqual([r["label"] for r in c["fields"]],
+                         ["recipient", "subject", "opener", "CV attached line",
+                          "signature", "CV file on disk", "body length"])
+        self.assertEqual([r["score"] for r in c["fields"]], [100] * 7)
+        self.assertTrue(all(r["required"] for r in c["fields"]))
+        self.assertTrue(all(r["state"] == "filled" for r in c["fields"]))
+        self.assertEqual(c["skipped_optional"], 0)
+        bad = em._confidence(None, "", "hey there", attachments=None)
+        self.assertEqual([r["score"] for r in bad["fields"]], [0] * 7)
+        self.assertEqual([r["state"] for r in bad["fields"]], ["missing"] * 7)
 
 class TestEmailSignerResolution(unittest.TestCase):
     """The default signer is read from the profile, never hardcoded."""
@@ -379,4 +484,7 @@ class TestConfidenceArtifact(unittest.TestCase):
         self.assertEqual(conf["pct"], 100)
         self.assertEqual(conf["channel"], "form")
         self.assertFalse((d / "confidence.json.tmp").exists())
+        self.assertEqual(conf["fields"][0]["score"], 100)
+        self.assertEqual(conf["fields"][0]["name"], "email")
+        self.assertEqual(result["confidence"]["fields"], conf["fields"])
         self.assertEqual(result["artifacts"]["confidence_json"], str(d / "confidence.json"))

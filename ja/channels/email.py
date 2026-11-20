@@ -64,6 +64,10 @@ def _confidence(to, subject, body, attachments=None, signer=None):
         "filled": filled,
         "missing": [label for label, ok in checks if not ok][:8],
         "channel": "email",
+        # same per-item shape the form channel emits, so the dashboard has one path
+        "fields": [{"label": label, "required": True, "score": 100 if ok else 0,
+                    "state": "filled" if ok else "missing"} for label, ok in checks],
+        "skipped_optional": 0,
     }
 
 def create_email_draft(to, cc=None, subject="", body="", attachments=None,

@@ -7,7 +7,7 @@ Irreversible actions are recorded BEFORE they happen (PLAN.md section 10).
 import datetime
 import json
 
-from . import config, gates, sources, tracker
+from . import config, gates, priority, sources, tracker
 
 
 def atomic_write_text(path, text):
@@ -209,6 +209,8 @@ def run(limit=5, dry=True, confirm_submit=False):
                     j2 = dict(j)
                     j2.update({"score": r["score"], "decision": r["decision"]})
                     shortlist.append(j2)
+    # one company = one application: keep the best-ranked open role per company
+    shortlist = list(priority.pick_per_company(shortlist).values())
     shortlist.sort(key=lambda x: x.get("score", 0), reverse=True)
     print("gate: %d shortlisted" % len(shortlist))
     _phase("P6-loop", "gate done (%d shortlisted)" % len(shortlist))
