@@ -94,6 +94,26 @@ VALID_STATUSES = {"discovered", "gated", "rejected", "shortlisted", "drafted",
                   "withdrawn", "ghosted"}
 
 
+def retryable_attempt(job_id, channel="form"):
+    """application_id of our own unsubmitted attempt at this job+channel, or None.
+
+    A run that filled a form and then refused (a captcha, a page that had not
+    rendered) leaves a `prefilled` row behind. That row is this pipeline's own
+    footprint, not a submission: the next attempt at the same page must be
+    allowed to reuse it, which is what `exclude_application_id` is for. Only
+    drafted/prefilled qualify — submitted/won rows never do.
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT application_id FROM applications WHERE job_id=? AND channel=? "
+            "AND status IN ('drafted','prefilled') ORDER BY application_id DESC LIMIT 1",
+            (job_id, channel)).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
 def create_application(job_id, channel="form", status="discovered", notes=None, dry_run=False):
     if status not in VALID_STATUSES:
         raise ValueError("invalid status " + status)

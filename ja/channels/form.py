@@ -29,6 +29,16 @@ ATS_HOSTS = [
 
 NEEDS_HUMAN = "NEEDS_HUMAN"
 
+# The form is client-rendered: Ashby/Greenhouse answer HTTP 200 with an empty shell
+# and mount the controls later (a 2026-11-21 live run screenshotted one still reading
+# "Fetching application form" while the same URL had scored 100% in a warm sweep).
+# Discover only after a real control exists, then let the late mounts arrive
+# (react-select mirrors, upload pickers) — "0 fields" must mean an empty page, not
+# an impatient reader.
+FORM_SELECTOR = "input:not([type=hidden]), textarea, select"
+FORM_RENDER_MS = 15000   # bounded: a form that has not rendered by now is a stop, not a 0
+FORM_SETTLE_MS = 1200
+
 # The label ladder, shared by both discovery passes. A human finds a question's
 # text by trying these in order; so do we, and we say which one won so the
 # confidence row can report "placeholder only" instead of pretending a
@@ -93,6 +103,24 @@ def detect_ats(url):
             if host == d or host.endswith("." + d) or d in host:
                 return name
     return "generic"
+
+def _wait_for_form(page, timeout_ms=None):
+    """(ok, detail): wait for the client-rendered form before discovering fields.
+
+    Returns False with a reason a human can read when nothing renders: that is a
+    stop, not a 0-field page, so `pct=None` can no longer mean "we looked too
+    early" (see FORM_RENDER_MS).
+    """
+    t = int(FORM_RENDER_MS if timeout_ms is None else timeout_ms)
+    try:
+        page.wait_for_selector(FORM_SELECTOR, state="attached", timeout=t)
+    except Exception:
+        return False, "form never rendered (no input/select/textarea within %d ms)" % t
+    try:
+        page.wait_for_timeout(FORM_SETTLE_MS)
+    except Exception:
+        pass
+    return True, "rendered within %d ms" % t
 
 def _runtime():
     return config.runtime_dir()
@@ -169,15 +197,32 @@ _PROSE_MARKERS = ("how ", "why ", "what ", "describe", "explain", "tell us",
 _YEARS_Q = re.compile(r"\b(years?|yrs?)\b", re.I)
 _YEARS_SUBJECT = re.compile(r"\bwith\b|\bin\b|\busing\b|\bof experience in\b", re.I)
 
+# `"tel" in label` is a substring trap: "Please TELl us about your open source
+# contributions" and "TELl us more" were answered with the phone number and scored
+# as filled. Word boundaries only.
+_PHONE_Q = re.compile(r"\b(?:phone|telephone|tel|mobile|cell)\b", re.I)
+
+_WS = re.compile(r"[\s\u00a0\u2007\u2009\u202f]+")
+
 
 def _is_band_option(label):
     """"0-1 year", "2-4 years", "10+ years" is a dropdown option, not a question."""
     return bool(_BAND_OPTION.match(str(label or "")))
 
 
+def _norm(s):
+    """Lowercase and collapse whitespace, NBSP included.
+
+    ATS labels come from rendered HTML: "please\\u00a0 provide" defeated every
+    `"please provide" in label` check, so a prose question fell through to the name
+    rule and was answered with the candidate's name.
+    """
+    return _WS.sub(" ", str(s or "")).strip().lower()
+
+
 def _looks_like_prose(label):
     """A question we cannot answer from a file, however many keywords it shares."""
-    low = str(label or "").lower()
+    low = _norm(label)
     return any(m in low for m in _PROSE_MARKERS)
 
 
@@ -290,11 +335,11 @@ def map_fields(fields, profile, answers=None):
     reasons = {}
     for i, f in enumerate(fields or []):
         label = (f.get("label") or f.get("name") or f.get("id") or f.get("placeholder") or "").strip()
-        low = label.lower()
-        name_low = (f.get("name") or "").lower()
-        id_low = (f.get("id") or "").lower()
-        ph_low = (f.get("placeholder") or "").lower()
-        haystack = " ".join([low, name_low, id_low, ph_low])
+        low = _norm(label)
+        name_low = _norm(f.get("name"))
+        id_low = _norm(f.get("id"))
+        ph_low = _norm(f.get("placeholder"))
+        haystack = " ".join([low, name_low, id_low, ph_low]).strip()
         key = f.get("name") or f.get("id") or "field_%d" % i
         answer = NEEDS_HUMAN
         reason = None
@@ -309,14 +354,24 @@ def map_fields(fields, profile, answers=None):
         elif "last name" in haystack or "family name" in haystack or "surname" in haystack or "lastname" in haystack:
             parts = (facts["full_name"] or "").split()
             answer = parts[-1] if len(parts) > 1 else NEEDS_HUMAN
-        elif "customer name" in haystack or "full name" in haystack or "your name" in haystack or haystack.strip() in ("name",) or "applicant name" in haystack or "candidate name" in haystack:
+        # A prose question may contain the word "name" without being a name field: an
+        # Ashby question ("If you have a familial relationship to a current employee,
+        # please provide their name...") was answered with the candidate's own name —
+        # an invented answer to a factual question, and it scored 100%. Prose is
+        # refused for the same reason the education rules refuse it: we never invent.
+        elif not _looks_like_prose(low) and (
+                "customer name" in haystack or "full name" in haystack or "your name" in haystack
+                or haystack.strip() in ("name",) or "applicant name" in haystack
+                or "candidate name" in haystack):
             answer = facts["full_name"]
-        elif "name" in haystack and "company" not in haystack and "organization" not in haystack:
+        elif not _looks_like_prose(low) and (
+                "name" in haystack and "company" not in haystack
+                and "organization" not in haystack):
             answer = facts["full_name"]
 
         elif "email" in haystack or "e-mail" in haystack or "mail" in haystack:
             answer = facts["email"]
-        elif "phone" in haystack or "mobile" in haystack or "telephone" in haystack or "tel" in haystack:
+        elif _PHONE_Q.search(haystack):
             answer = facts["phone"]
         elif any(w in haystack for w in ["location", "city", "address", "where are you based", "current location", "country"]):
             answer = facts["location"]
@@ -353,9 +408,17 @@ def map_fields(fields, profile, answers=None):
             answer = "Yes" if facts["work_authorized"] else NEEDS_HUMAN
         elif any(w in haystack for w in ["sponsorship", "visa sponsor", "require sponsor"]):
             answer = ("Yes" if facts["needs_sponsorship"] else "No") if facts["needs_sponsorship"] is not None else NEEDS_HUMAN
-        elif any(w in haystack for w in ["salary", "compensation", "expected", "desired"]):
+        # Bare "expected"/"desired" answered a degree question ("...degree result, or
+        # expected result if you have not yet graduated") with the salary range, and
+        # bare "source" answered "open source contributions" with "job board". Both
+        # scored as filled. Keyword families stay, substrings go.
+        elif any(w in haystack for w in ["salary", "compensation", "remuneration",
+                                         "pay range", "expected pay", "expected salary",
+                                         "desired salary", "ctc"]):
             answer = facts["salary"]
-        elif any(w in haystack for w in ["how did you hear", "how hear", "source", "referral"]):
+        elif any(w in haystack for w in ["how did you hear", "how hear", "how did you find",
+                                         "where did you hear", "referral source",
+                                         "source of this job", "source of the job"]):
             answer = facts["how_heard"]
         elif any(w in haystack for w in ["cover letter", "why", "motivation", "additional", "anything else", "comments", "delivery instructions"]):
             for k, v in bank.items():
@@ -394,7 +457,7 @@ def _shape_ok(haystack, value):
     v = str(value).strip()
     low = haystack
     is_email_field = ("email" in low or "e-mail" in low or "mail" in low)
-    is_phone_field = ("phone" in low or "mobile" in low or "telephone" in low or "tel" in low)
+    is_phone_field = bool(_PHONE_Q.search(low))
     is_number_field = ("years" in low or "amount" in low)
     if is_email_field:
         if "@" not in v or "." not in v.split("@")[-1]:
@@ -736,6 +799,15 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
         has_ts = bool(page.query_selector(".cf-turnstile, [data-sitekey], iframe[src*='challenges.cloudflare.com']"))
         log("turnstile_detect", present=has_ts, sitekey=sitekey)
 
+
+        # the form is client-rendered: wait for it instead of reading an empty shell
+        rendered, why = _wait_for_form(page)
+        if not rendered:
+            result["stopped"] = why
+            log("stopped", reason=why, url=page.url)
+            _finalize(result, adir, steps)
+            return result
+        log("form_rendered", detail=why)
         # field discovery: gather labeled inputs
         fields = []
         try:
@@ -756,7 +828,13 @@ def prepare_application(job, profile, answers_path=None, allow_submit=False,
             }""" % _LADDER_JS)
         except Exception:
             fields = []
-        log("fields_discovered", count=len(fields))
+        try:
+            raw_n = page.evaluate("() => document.querySelectorAll('input, textarea, select').length")
+        except Exception:
+            raw_n = None
+        # `raw` next to `count` is the number that was missing when a hydrating page
+        # was read as an empty one: raw>0 with count 0 is a markup problem, raw 0 is a page.
+        log("fields_discovered", count=len(fields), raw=raw_n)
         # a password input means a login/auth wall, never a job question: the
         # submit gate refuses on it (never type a credential into an ATS form).
         result["password_fields"] = [f.get("name") or f.get("id") for f in fields

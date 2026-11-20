@@ -20,6 +20,14 @@ Run in order:
   A captcha/auth wall stops the batch at that page; for a measurement sweep
   (`--dry-run --keep-going-wall`) it walks on instead — the flag only changes whether the loop breaks,
   never what may be submitted.
+  `--only <job_id[,job_id]>` scopes a run to candidates already cleared by hand (the selection still
+  runs and reports how many it dropped; a live run never wanders onto an unscreened page). A refused
+  attempt leaves the job's own `prefilled` row behind: the next run reuses that row as its duplicate
+  exclusion (`tracker.retryable_attempt`), so a page that refused on a race or a wall stays retryable
+  while anything a human or a real submission created still blocks. Field discovery waits for the
+  client-rendered form before reading it (Ashby/Greenhouse return 200 with an empty shell; the wait
+  is bounded at 15 s), and a page that never renders a control reports `stopped` — `pct=None` now
+  means the page really has no fillable controls, never "we read it too early".
 6. `python3 -m ja sync` — sync applications into career-ops (`batch/tracker-additions/*.tsv`).
 7. `python3 -m ja report` — weekly markdown dashboard.
 Expected output: funnel counts per step; artifacts land under `~/.job-autopilot/runs/<date>/` and

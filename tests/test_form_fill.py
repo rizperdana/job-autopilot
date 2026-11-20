@@ -659,3 +659,149 @@ class TestSelectOptionMatch(unittest.TestCase):
     def test_option_value_attribute_is_also_accepted(self):
         p = self._Page([("Pick one", "bachelors_degree")])
         self.assertEqual(form._select_option(p, "#d", "Bachelor Degree"), "Pick one")
+
+
+class TestFormRenderWait(unittest.TestCase):
+    """`0 fields` must mean an empty page, never an impatient reader."""
+
+    class _Page:
+        def __init__(self, raises=False):
+            self.raises = raises
+            self.selector = None
+            self.timeout = None
+            self.settles = []
+
+        def wait_for_selector(self, selector, state=None, timeout=None):
+            self.selector, self.timeout = selector, timeout
+            if self.raises:
+                raise RuntimeError("Timeout 15000ms exceeded")
+            return object()
+
+        def wait_for_timeout(self, ms):
+            self.settles.append(ms)
+
+    def test_waits_for_a_real_control_then_settles(self):
+        p = self._Page()
+        ok, why = form._wait_for_form(p)
+        self.assertTrue(ok)
+        self.assertIn("input", p.selector)
+        self.assertEqual(p.timeout, form.FORM_RENDER_MS)
+        self.assertEqual(p.settles, [form.FORM_SETTLE_MS])
+        self.assertIn("rendered", why)
+
+    def test_an_empty_shell_stops_with_a_readable_reason(self):
+        p = self._Page(raises=True)
+        ok, why = form._wait_for_form(p, timeout_ms=1234)
+        self.assertFalse(ok)
+        self.assertEqual(p.settles, [])
+        self.assertIn("form never rendered", why)
+        self.assertIn("1234 ms", why)
+        self.assertIn("no input/select/textarea", why)
+
+
+class TestProseNameQuestion(unittest.TestCase):
+    """A question that merely mentions "name" never gets the candidate's name."""
+
+    def _profile(self):
+        return {"candidate": {"full_name": "Test Candidate", "email": "candidate@example.com",
+                              "phone": "+00 000 000 000", "location": "Test City, Indonesia"}}
+
+    def test_the_virta_familial_question_is_left_to_the_human(self):
+        f = {"label": "If you have a familial relationship to a current employee, please "
+                       "provide their name, your relationship to them, and any additional "
+                       "details you believe are relevant. If you have no familial "
+                       "relationships please write 'n/a'.",
+             "name": "01bee1ba-3fbd-4291-8525-67cbc4f829cf", "type": "textarea"}
+        m = form.map_fields([f], self._profile(), {})
+        self.assertEqual(m[f["name"]], form.NEEDS_HUMAN)
+
+    def test_a_plain_name_field_still_gets_the_name(self):
+        fields = [{"label": "Name", "name": "n1"},
+                  {"label": "Full name", "name": "n2"},
+                  {"label": "Customer name:", "name": "n3"},
+                  {"label": "Applicant Name", "name": "n4"}]
+        m = form.map_fields(fields, self._profile(), {})
+        for f in fields:
+            self.assertEqual(m[f["name"]], "Test Candidate")
+
+
+class TestPhoneKeywordBoundary(unittest.TestCase):
+    """`tel` inside "tell us" is not a phone field."""
+
+    def _profile(self):
+        return {"candidate": {"full_name": "Test Candidate", "phone": "+00 000 000 000",
+                              "email": "candidate@example.com"}}
+
+    def test_a_prose_question_containing_tell_us_is_not_a_phone_field(self):
+        fields = [{"label": "Please tell us about your open source contributions",
+                   "name": "q1"},
+                  {"label": "Tell us more", "name": "q2"}]
+        m = form.map_fields(fields, self._profile(), {})
+        self.assertEqual(m["q1"], form.NEEDS_HUMAN)
+        self.assertEqual(m["q2"], form.NEEDS_HUMAN)
+
+    def test_real_phone_fields_still_map(self):
+        fields = [{"label": "Phone", "name": "p1"},
+                  {"label": "Telephone number", "name": "p2"},
+                  {"label": "Mobile", "name": "p3"},
+                  {"label": "Tel", "name": "p4"}]
+        m = form.map_fields(fields, self._profile(), {})
+        for f in fields:
+            self.assertEqual(m[f["name"]], "+00 000 000 000")
+        # the predicate itself: "tell us" is not tel; a real tel field is
+        self.assertIsNone(form._PHONE_Q.search("Tell us more"))
+        self.assertIsNone(form._PHONE_Q.search("open source contributions"))
+        self.assertTrue(form._PHONE_Q.search("Tel"))
+        self.assertTrue(form._PHONE_Q.search("Telephone number"))
+
+
+class TestCannedAnswerTriggers(unittest.TestCase):
+    """A canned answer must not land on a question about something else."""
+
+    def _profile(self):
+        return {"candidate": {"full_name": "Test Candidate", "phone": "+00 000 000 000",
+                              "email": "candidate@example.com"},
+                "compensation": {"target_range": "$50K-90K"}}
+
+    def test_a_non_breaking_space_does_not_hide_the_prose(self):
+        # the real Virta label renders "please\u00a0 provide", which defeated every
+        # marker check until labels were normalized
+        f = {"label": "If you have a familial relationship to a current Virta employee, "
+                      "please\u00a0 provide their name, your relationship to them, and any "
+                      "additional details you believe are relevant. If you have no "
+                      "familial relationships please write 'n/a'.",
+             "name": "01bee1ba-3fbd-4291-8525-67cbc4f829cf", "type": "textarea"}
+        m = form.map_fields([f], self._profile(), {})
+        self.assertEqual(m[f["name"]], form.NEEDS_HUMAN)
+        self.assertTrue(form._looks_like_prose(f["label"]))
+
+    def test_open_source_is_not_how_did_you_hear(self):
+        fields = [{"label": "Please tell us about your Open Source contributions",
+                   "name": "q1"},
+                  {"label": "Describe any past experience with open source community "
+                            "engagement", "name": "q2"}]
+        m = form.map_fields(fields, self._profile(), {})
+        self.assertEqual(m["q1"], form.NEEDS_HUMAN)
+        self.assertEqual(m["q2"], form.NEEDS_HUMAN)
+
+    def test_how_did_you_hear_still_gets_the_canned_answer(self):
+        fields = [{"label": "How did you hear about this job?", "name": "h1"},
+                  {"label": "How did you find out about this role?", "name": "h2"}]
+        m = form.map_fields(fields, self._profile(), {})
+        self.assertEqual(m["h1"], "job board")
+        self.assertEqual(m["h2"], "job board")
+
+    def test_a_degree_result_question_is_not_a_salary_question(self):
+        f = {"label": "What was your bachelor's university degree result, or expected "
+                      "result if you have not yet graduated? Please include your GPA.",
+             "name": "d1"}
+        m = form.map_fields([f], self._profile(), {})
+        self.assertEqual(m["d1"], form.NEEDS_HUMAN)
+
+    def test_a_salary_question_still_gets_the_range(self):
+        fields = [{"label": "What are your base salary expectations?", "name": "s1"},
+                  {"label": "Desired salary range", "name": "s2"},
+                  {"label": "What compensation are you targeting?", "name": "s3"}]
+        m = form.map_fields(fields, self._profile(), {})
+        for f in fields:
+            self.assertEqual(m[f["name"]], "$50K-90K")

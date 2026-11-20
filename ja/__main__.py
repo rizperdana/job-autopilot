@@ -233,7 +233,9 @@ def cmd_batch_apply(args):
                           dry=_dry(args),
                           confirm_submit=bool(getattr(args, "confirm_submit", False)),
                           decisions=decisions,
-                          continue_on_wall=bool(getattr(args, "keep_going_wall", False)))
+                          continue_on_wall=bool(getattr(args, "keep_going_wall", False)),
+                          only=([x.strip() for x in (getattr(args, "only", None) or "").split(",")
+                                 if x.strip()] or None))
 
 
 def cmd_status(args):
@@ -303,6 +305,9 @@ def main():
     p.add_argument("--keep-going-wall", action="store_true",
                    help="measurement runs: keep walking past a captcha/auth wall instead of "
                         "stopping the batch (never changes what may be submitted)")
+    p.add_argument("--only", default=None,
+                   help="comma-separated job ids: scope the batch to candidates already "
+                        "cleared by hand (a live run never wanders onto an unscreened page)")
     p = add("loop", cmd_loop)
     p.add_argument("--limit", type=int, default=5)
     p = add("status", cmd_status)

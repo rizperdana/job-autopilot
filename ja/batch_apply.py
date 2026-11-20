@@ -254,12 +254,20 @@ def select_candidates(shortlist, pool, attempts, decisions=("apply",), liveness_
                 tally.get("gate decision %s (re-evaluated, not in --decision)"
                           % (job["decision"] or "unrecorded"), 0) + 1
             continue
-        if already_drafted(jid, channel="form"):
+        # our own unsubmitted attempt (a refused prefill) is not a duplicate of
+        # itself: reuse its row so the page stays retryable, and keep excluding
+        # everything a human or a real submission would have created
+        aid = tracker.retryable_attempt(jid, "form")
+        blocked = already_drafted(jid, channel="form")
+        if blocked and not (aid and blocked in ("drafted", "prefilled")):
             tally["already applied on form"] = tally.get("already applied on form", 0) + 1
             continue
-        if fm._duplicate(job.get("company") or "", job.get("role") or "", "form"):
+        if fm._duplicate(job.get("company") or "", job.get("role") or "", "form",
+                         exclude_application_id=aid):
             tally["duplicate company+role"] = tally.get("duplicate company+role", 0) + 1
             continue
+        if aid:
+            job["application_id"] = aid
         if liveness_probe is not None:
             url = job.get("apply_url") or job.get("url")
             alive, why, status = liveness_probe(url)
@@ -303,7 +311,7 @@ def write_report(line, path=None):
 
 
 def run_batch(limit=5, attempts=None, max_submissions=None, dry=False, confirm_submit=False,
-              decisions=("apply",), continue_on_wall=False):
+              decisions=("apply",), continue_on_wall=False, only=None):
     """Select -> prefill -> gate -> submit -> evidence, with hard batch stops.
 
     Returns a summary dict. `limit` bounds confirmed submissions; `attempts`
@@ -312,6 +320,9 @@ def run_batch(limit=5, attempts=None, max_submissions=None, dry=False, confirm_s
     default; "review" is the ~1,875-job band the gates left to a human).
     A captcha/auth wall stops the batch by default (`out["stopped"]`);
     `continue_on_wall` only keeps a measurement run walking instead.
+    `only` (job ids) scopes the run to candidates already cleared by hand: the
+    selection still runs, the scope is applied after it, and the log says how many
+    it dropped, so a live batch can never wander onto an unscreened page.
     """
     cap, overridden = resolve_cap(max_submissions)
     cfg_cap = int(config.get("policy.max_submissions_per_day", 0))
@@ -347,6 +358,15 @@ def run_batch(limit=5, attempts=None, max_submissions=None, dry=False, confirm_s
           % (",".join(decisions), len(candidates), sum(tally.values()), email_n))
     for reason, n in sorted(tally.items(), key=lambda kv: -kv[1]):
         print("  left out: %-62s %d" % (reason, n))
+
+    if only:
+        wanted = {str(x).strip() for x in only if str(x).strip()}
+        before = len(candidates)
+        candidates = [c for c in candidates if c.get("job_id") in wanted]
+        print("only: %d of %d selected candidates (%s)%s"
+              % (len(candidates), before, ",".join(sorted(wanted)),
+                 "" if len(candidates) == len(wanted) else
+                 " | MISSING: " + ",".join(sorted(wanted - {c.get("job_id") for c in candidates}))))
 
     out = {"selected": len(candidates), "submitted": 0, "unconfirmed": 0, "refused": 0,
            "would_submit": 0, "dry": dry, "effective_cap": cap, "cap_overridden": overridden,
